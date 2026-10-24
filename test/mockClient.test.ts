@@ -35,6 +35,7 @@ it("runs an arbitrary-topic mock lesson and resets its knowledge without leaking
   expect(state.concept_1.status).toBe("unknown");
   await client.sendUserText("In jazz improvisation you create a melody in the moment, listening to the harmony and rhythm so the phrase fits what the band is playing.");
   expect(state.concept_1.status).toBe("understood");
+  expect(toList(transcript).at(-1)).toMatchObject({ kind: "assistant", text: expect.stringContaining("go with that for now") });
   await client.sendUserText("Can you teach back what you learned?");
   expect(toList(transcript).at(-1)).toMatchObject({ kind: "assistant", text: expect.stringContaining("jazz improvisation") });
   client.disconnect(); await client.connect(); expect(state).toEqual(initialTopicKnowledge(lesson));

@@ -6,7 +6,7 @@ import {
   type TranscriptState,
 } from "../state/transcriptStore";
 
-export function TranscriptPanel({ state, topic }: { state: TranscriptState; topic?: string }) {
+export function TranscriptPanel({ state, topic, studentName = "Alex" }: { state: TranscriptState; topic?: string; studentName?: string }) {
   const items = toList(state);
   const endRef = useRef<HTMLDivElement>(null);
 
@@ -17,7 +17,7 @@ export function TranscriptPanel({ state, topic }: { state: TranscriptState; topi
   }, [items.length, items[items.length - 1]]);
 
   if (items.length === 0) {
-    return <p className="empty">Your conversation will appear here. {topic ? `Turn on your microphone and teach Alex about ${topic}.` : "Choose a topic and start a lesson."}</p>;
+    return <p className="empty">Your conversation will appear here. {topic ? `Turn on your microphone and teach ${studentName} about ${topic}.` : "Choose a topic and start a lesson."}</p>;
   }
 
   return (
@@ -32,14 +32,14 @@ export function TranscriptPanel({ state, topic }: { state: TranscriptState; topi
         </button>
       </div>
       {items.map((item) => (
-        <TurnBubble key={item.itemId} item={item} />
+        <TurnBubble key={item.itemId} item={item} studentName={studentName} />
       ))}
       <div ref={endRef} />
     </section>
   );
 }
 
-function TurnBubble({ item }: { item: TranscriptItem }) {
+function TurnBubble({ item, studentName = "Alex" }: { item: TranscriptItem; studentName?: string }) {
   if (item.kind === "system") {
     return <div className="turn system">— {item.text} —</div>;
   }
@@ -76,7 +76,7 @@ function TurnBubble({ item }: { item: TranscriptItem }) {
 
   return (
     <div className={`turn assistant ${item.status}`}>
-      <span className="who">Alex</span>
+      <span className="who">{studentName}</span>
       {item.text}
       {item.status === "streaming" && <span className="caret" />}
       {item.status === "interrupted" && <span className="badge">interrupted</span>}

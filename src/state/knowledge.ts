@@ -2,7 +2,8 @@ export const CONCEPTS = ["gradient_direction", "learning_rate", "convergence"] a
 export type Concept = (typeof CONCEPTS)[number];
 export const LEVELS = ["unknown", "misunderstood", "partial", "understood"] as const;
 export type Level = (typeof LEVELS)[number];
-export interface Understanding { status: Level; evidence: string; sourceId?: string; reason?: string; criteriaMet?: string[]; belief?: string }
+export interface LearnedFact { id: string; text: string; review: "accurate" | "unverified" | "misconception"; origin?: "conversation" | "instructor-notes"; sourceId?: string; conceptId?: string | null; questionContext?: string; groundTruth?: string; teachingComplete?: boolean; independentTopicFact?: boolean }
+export interface Understanding { status: Level; evidence: string; sourceId?: string; reason?: string; criteriaMet?: string[]; belief?: string; beliefAccuracy?: LearnedFact["review"]; groundTruth?: string; learnedFacts?: LearnedFact[]; taughtGuideFactIds?: string[] }
 export type KnowledgeState = Record<string, Understanding>;
 export interface ToolResult { summary: string; error?: string; state?: KnowledgeState }
 export const LABELS: Record<Concept, string> = {

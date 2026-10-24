@@ -15,9 +15,10 @@ import { RingPlayer } from "../audio/playback";
 import { MicCapture } from "../audio/capture";
 import { dispatch as dispatchTool } from "../tools/registry";
 import { CLIENT_TOOL_RESULT } from "../state/transcriptStore";
-import type { KnowledgeState } from "../state/knowledge";
+import type { KnowledgeState, ToolResult } from "../state/knowledge";
 import { createKnowledgeTracker, type KnowledgeContext } from "../state/createKnowledgeTracker";
 import type { LessonDefinition, EvidenceAssessor } from "../state/lesson";
+import { studentToolFeedback } from "../state/topicKnowledge";
 import { buildRealtimeUrl, type RealtimeCredentials } from "./runtimeConfig";
 
 export type ConnectionState = "idle" | "connecting" | "open" | "closing" | "closed";
@@ -396,7 +397,10 @@ export class RealtimeClient {
         result,
         ms: Date.now() - startedAt,
       });
-      batch.outputs.push(functionCallOutput(callId, JSON.stringify(result)));
+      const output = this.cb.lesson && isToolResult(result)
+        ? studentToolFeedback(this.cb.lesson, result)
+        : JSON.stringify(result);
+      batch.outputs.push(functionCallOutput(callId, output));
     })();
 
     batch.promises.push(p);
@@ -420,6 +424,7 @@ export class RealtimeClient {
         } catch {
           /* handled above */
         }
+
         this.startToolCall(item.call_id, item.name, args);
       }
     }
@@ -504,4 +509,8 @@ export class RealtimeClient {
   private log(dir: LogEntry["dir"], type: string, raw: unknown): void {
     this.cb.onLog?.({ id: ++logSeq, dir, type, at: Date.now(), raw });
   }
+}
+
+function isToolResult(value: unknown): value is ToolResult {
+  return Boolean(value && typeof value === "object" && "summary" in value);
 }

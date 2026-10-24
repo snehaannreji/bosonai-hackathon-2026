@@ -16,7 +16,7 @@ export class MockClient {
     this.active = true;
     this.tracker.reset(); this.explanations = [];
     this.cb.onConnectionState?.("open");
-    this.reply(this.cb.lesson ? `Hey, I’m Alex. ${this.cb.lesson.openingQuestion}` : "Hey, I'm Alex. I thought the gradient points toward the minimum. Is that how it works?");
+    this.reply(this.cb.lesson ? `Hey, I’m ${this.cb.lesson.studentName ?? "Alex"}. ${this.cb.lesson.openingQuestion}` : "Hey, I'm Alex. I thought the gradient points toward the minimum. Is that how it works?");
   }
   disconnect() { this.active = false; this.cb.onConnectionState?.("closed"); this.cb.onActivity?.("idle"); }
   async close() { this.disconnect(); }
@@ -29,18 +29,20 @@ export class MockClient {
     this.cb.onServerEvent?.({ type: "conversation.item.input_audio_transcription.completed", item_id: item, transcript: text });
     if (this.cb.lesson) {
       if (/teach back|explain it back|quiz/i.test(text)) {
-        this.reply(this.explanations.length ? `Let me try: ${this.explanations.at(-1)!.slice(0, 220)} Did I explain that clearly?` : `I’m still new to ${this.cb.lesson.topic}. Could you explain the main idea first?`);
+        this.reply(this.explanations.length ? `Let me try: ${this.explanations.at(-1)!.slice(0, 220)} Did I explain that clearly?` : `I’m still new to ${this.cb.lesson.topic}. What would you like to teach me first?`);
         return;
       }
-      const concepts = this.cb.lesson.concepts;
-      const concept = concepts.find(c => this.tracker.snapshot()[c.id].status !== "understood") ?? concepts[0];
       const call = `mock-tool-${++this.sequence}`;
-      const args = { concept: concept.id, evidence: text };
+      const args = { concept: "topic_fact", evidence: text };
       this.cb.onServerEvent?.({ type: "response.function_call_arguments.done", call_id: call, name: "update_understanding", arguments: JSON.stringify(args) });
       const result = await dispatch("update_understanding", args, this.tracker);
       this.cb.onServerEvent?.({ type: CLIENT_TOOL_RESULT, call_id: call, result, ms: 0 });
       if (!result.error) this.explanations.push(text);
-      this.reply(result.error ? `Could you explain how that relates to ${concept.label.toLowerCase()}?` : "That helps. Could you give me an example so I can try explaining it back?");
+      this.reply(this.cb.lesson.familiarity < 25
+        ? result.error === "ungrounded_evidence"
+          ? "I missed that. Could you say it once more?"
+          : "Oh, okay. I’ll go with that for now. Could you tell me a little more?"
+        : result.error ? "Could you tell me a little more about that?" : "That helps. What else should I know about it?");
       return;
     }
     let learned = false;
