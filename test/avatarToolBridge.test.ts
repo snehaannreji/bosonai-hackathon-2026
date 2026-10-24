@@ -71,46 +71,17 @@ describe("avatar server learning bridge", async () => {
     await vi.waitFor(() => expect(cb.send).toHaveBeenCalledTimes(12));
     expect(getFeedback("success")).toContain("You made progress");
   });
-  it.each([
-    ["elation", 0.01, "<|emotion:elation|><|prosody:expressive_high|>", "That's wonderful! I think that finally clicked."],
-    ["sadness", 0.43, "<|emotion:sadness|><|prosody:expressive_high|><|sfx:crying|>", "Boohoo, I thought I had it that time. Maybe one more example will help."],
-    ["contemplation", 0.56, "<|emotion:contemplation|>", "Let's think carefully about why this works."],
-  ] as const)("randomly cues %s with tagged student dialogue after progress", async (emotion, choice, expectedTags, expectedResponse) => {
-    const { mockLesson } = await import("../src/state/lesson");
-    const lesson = { ...mockLesson("Canada"), familiarity: 0, mock: false };
-    const assess = vi.fn(async () => ({
-      matchedCriteria: [],
-      matchedConcepts: [],
-      misconception: false,
-      reason: "A fact was taught.",
-      factAccuracy: "uncertain" as const,
-      topicFactTaught: true,
-    }));
+  it("logs emotion tags found in generated speech but ignores unknown tags", () => {
     const cb = { onEvent: vi.fn(), onKnowledge: vi.fn(), send: vi.fn() };
-    const bridge = new AvatarToolBridge(cb, lesson, assess);
-    const random = vi.spyOn(Math, "random")
-      .mockReturnValueOnce(0.1)
-      .mockReturnValueOnce(choice);
-    const fact = "Canada has two official national languages.";
-    bridge.observeText("u-mood", fact);
-    bridge.handle({
-      ...call,
-      call_id: `mood-${emotion}`,
-      arguments: JSON.stringify({ concept: "topic_fact", evidence: fact }),
+    const bridge = new AvatarToolBridge(cb);
+    bridge.handle({ type: "response.output_audio_transcript.done", transcript: "<|emotion:elation|><|prosody:expressive_high|>That clicked!" });
+    bridge.handle({ type: "response.output_audio_transcript.done", transcript: "<|emotion:unknown|>Hello." });
+    expect(cb.onEvent).toHaveBeenCalledWith({
+      type: "client.emotion_used",
+      emotion: "elation",
+      tag: "<|emotion:elation|>",
     });
-    bridge.handle({ type: "response.done", response: { status: "completed" } });
-    await vi.waitFor(() => expect(cb.send).toHaveBeenCalledTimes(2));
-    const output = cb.send.mock.calls[0][0].item.output as string;
-    expect(output).toContain("say this exact line verbatim");
-    expect(output).toContain(`${expectedTags}${expectedResponse}`);
-    expect(cb.onEvent).toHaveBeenCalledWith(expect.objectContaining({
-      type: "client.emotion_selected",
-      call_id: `mood-${emotion}`,
-      emotion,
-      tags: expectedTags,
-      response: expectedResponse,
-    }));
-    random.mockRestore();
+    expect(cb.onEvent).not.toHaveBeenCalledWith(expect.objectContaining({ emotion: "unknown" }));
   });
   it("attaches Alex's last question to a yes/no answer and updates the concept belief", async () => {
     const { mockLesson } = await import("../src/state/lesson");

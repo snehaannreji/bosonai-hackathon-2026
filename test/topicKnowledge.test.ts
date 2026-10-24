@@ -34,6 +34,13 @@ describe("arbitrary-topic lesson state", () => {
     expect(prompt).not.toContain("Lesson concepts and starting hunches");
     expect(prompt).toContain("blank knowledge state");
     expect(prompt).toContain("follow-up based on the fact just taught");
+    expect(prompt).toContain("Include the emotion and prosody tags in every reply");
+    expect(prompt).toContain("<|emotion:elation|>");
+    expect(prompt).toContain("choose one emotion uniformly at random");
+    expect(prompt).toContain("anger and sadness should each appear about as often");
+    expect(prompt).toContain("Add at least one matching prosody tag to every reply");
+    expect(prompt).toContain("<|style:shouting|>");
+    expect(prompt).toContain("never for anger, sadness, or ordinary speech");
     const novicePrompt = studentPrompt({ ...lesson, familiarity: 0 });
     expect(novicePrompt).toContain("Never correct, fact-check, contradict");
     expect(novicePrompt).toContain("instructor-only ground-truth check");
