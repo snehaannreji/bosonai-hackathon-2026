@@ -13,6 +13,8 @@
     "typecheck": "tsc -b --noEmit",
     "test": "vitest run",
     "probe": "tsx tools/probe.ts",
+    "probe:vision": "tsx tools/probe-vision.ts",
+    "probe:whiteboard": "tsx tools/probe-whiteboard.ts",
     "start": "NODE_ENV=production tsx server/index.ts",
     "avatar:config": "tsx tools/avatar-config.ts",
     "avatar:setup": "node tools/setup-avatar.mjs",
@@ -22,6 +24,7 @@
     "probe:photo": "node tools/run-avatar-python.mjs tools/photo-video-probe.py"
   },
   "dependencies": {
+    "@google/genai": "^2.31.0",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "livekit-client": "^2.23.0",

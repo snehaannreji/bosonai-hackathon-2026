@@ -10,6 +10,8 @@ import { prepareLesson, lessonAssessor } from "./realtime/lessonApi";
 import { LessonSetup } from "./ui/LessonSetup";
 import { LearningMap } from "./ui/LearningMap";
 import { DebugDrawer } from "./ui/DebugDrawer";
+import { WhiteboardPanel } from "./ui/WhiteboardPanel";
+import type { VisualContext } from "./whiteboard/observations";
 import { MicButton } from "./ui/MicButton";
 import { TranscriptPanel } from "./ui/TranscriptPanel";
 import type { RealtimeCredentials } from "./realtime/runtimeConfig";
@@ -71,6 +73,11 @@ export default function App() {
   const micBusy = useRef(false);
   const connected = connection === "open";
   const busy = preparing || connected || connection === "connecting" || connection === "closing";
+  const deliverWhiteboard = useMemo(() => {
+    const target = client.current;
+    if (!connected || mode === "mock" || !target || !("updateWhiteboard" in target)) return undefined;
+    return (context: VisualContext) => target.updateWhiteboard(context);
+  }, [connected, mode, lesson?.id]);
   const emotionRecords = useMemo(() => emotionDashboardRecords(emotionLog), [emotionLog]);
   const selectedFace = presets.find(face => face.id === avatarId);
   const studentAppearance = catalogRef.current ? studentAvatarSelection(catalogRef.current, student) : null;
@@ -198,6 +205,7 @@ export default function App() {
         <a className="avatar-link" href="https://docs.boson.ai/models/higgs-avatar/realtime-sessions" target="_blank" rel="noreferrer">Boson live avatar setup guide ↗</a>
       </aside>
     </div>
+    <WhiteboardPanel sessionKey={lesson?.id} deliverObservation={deliverWhiteboard} experiment={new URLSearchParams(window.location.search).get("whiteboardTest") === "1"} />
     <footer>YOU TEACH. {studentName.toUpperCase()} LEARNS. YOU UNDERSTAND.<span>Powered by Boson Higgs Realtime</span></footer>
     <DebugDrawer entries={log} />
   </main>;

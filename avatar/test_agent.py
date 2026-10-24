@@ -144,4 +144,20 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         self.delete.assert_called_once(); self.room.disconnect.assert_awaited_once()
         self.assertNotIn("response.output_audio.delta", self.logs.getvalue())
 
+    async def test_visual_instruction_ack_does_not_reset_speaking_or_reannounce_ready(self):
+        output = FakeOutput()
+        ws = FakeSocket([
+            {"type": "session.created"},
+            {"type": "response.output_audio.delta", "item_id": "student-1", "delta": base64.b64encode(b"\0\0\0\0").decode()},
+            {"type": "session.updated", "session": {"instructions": "new visual context"}},
+            {"type": "response.done", "response": {"status": "completed"}},
+        ])
+        with patch.object(agent, "AUDIO_RENDERER", "realtime"), patch.object(agent, "DataStreamAudioOutput", return_value=output), patch.object(agent.websockets, "connect", return_value=ws):
+            await self.run_main()
+        messages = [json.loads(line) for line in self.logs.getvalue().splitlines() if line.startswith("{")]
+        self.assertEqual(sum(m.get("kind") == "ready" for m in messages), 1)
+        activities = [m.get("activity") for m in messages if m.get("kind") == "activity"]
+        self.assertEqual(activities, ["listening", "speaking"])
+        output.clear_buffer.assert_not_called()
+
 if __name__ == "__main__": unittest.main()

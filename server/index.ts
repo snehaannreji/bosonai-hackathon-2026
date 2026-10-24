@@ -6,6 +6,7 @@ import { readRealtimeSettings } from "../src/realtime/runtimeConfig";
 import { buildTaggedSpeechInput, isSpeechEmotion } from "../src/realtime/speechTags";
 import { createAvatarRouter } from "./avatarSessions";
 import { createLessonService } from "./lessons";
+import { createVisionService } from "./vision";
 
 dotenv.config();
 
@@ -46,8 +47,9 @@ const BOSON_API_KEY = loadApiKey();
 
 const app = express();
 app.disable("x-powered-by");
-app.use(express.json({ limit: "128kb" }));
 app.use("/api", (_req, res, next) => { res.setHeader("Cache-Control", "no-store"); next(); });
+app.use("/api/vision", express.json({ limit: "1500kb" }), createVisionService());
+app.use(express.json({ limit: "128kb" }));
 const lessonService = createLessonService(BOSON_API_KEY);
 app.use("/api/lessons", lessonService.router);
 const avatars = createAvatarRouter(BOSON_API_KEY, lessonService);

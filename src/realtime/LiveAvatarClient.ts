@@ -4,6 +4,7 @@ import type { KnowledgeState } from "../state/knowledge";
 import type { ServerEvent } from "./events";
 import { EmotionAcknowledgmentTracker } from "./emotionAcknowledgment";
 import { isSpeechEmotion } from "./speechTags";
+import type { ContextReceipt, VisualContext } from "../whiteboard/observations";
 
 async function post(path: string, body = {}, keepalive = false) {
   const response = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), keepalive });
@@ -128,6 +129,10 @@ export class LiveAvatarClient {
     if (!this.lessonId) return;
     try { await this.room?.startAudio(); await post(`/api/avatar/lessons/${this.lessonId}/text`, { text }); }
     catch (error) { this.cb.onError?.(error instanceof Error ? error.message : "Could not send that explanation."); }
+  }
+  async updateWhiteboard(context: VisualContext): Promise<ContextReceipt> {
+    if (!this.active || !this.voiceReady || !this.lessonId) throw new Error("Start the avatar conversation before sharing the board.");
+    return await post(`/api/avatar/lessons/${this.lessonId}/visual-context`, { context }) as ContextReceipt;
   }
   disconnect() {
     this.active = false; ++this.generation;

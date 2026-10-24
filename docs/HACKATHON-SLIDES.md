@@ -3,6 +3,7 @@
 Source: team-provided `Boson-Opening-2026.pdf` (22 pages, October 23–24, 2026). Relevant pages were text-extracted and visually inspected. The PDF contains no embedded files or hyperlink/annotation instructions on the relevant pages.
 
 - **Slide 8:** a Higgs Realtime + Higgs Avatar live-call demo names a photo, voice and text prompt as its inputs. It establishes the demonstrated capability but supplies no API request.
+- **Slide 11 (reviewed October 24):** demonstrates simultaneous live camera and microphone input, identifying a drink and counting changing fingers. This is direct evidence of preview visual understanding, beyond face output. The slide provides no camera-input protocol or SDK link. See [the whiteboard vision investigation](WHITEBOARD-VISION.md).
 - **Slide 16:** Higgs Avatar is demonstrated from one image with expression, lip sync and head motion. The slide labels the pipeline image + speech → video.
 - **Slides 7 and 17:** the exact research-preview model ID is `higgs-realtime-1.5-preview`. Slide 17 describes concurrent listening/speaking and face video from the same model.
 - **Slide 18:** the preview is described as producing face frames at 25 fps. This is a capability description, not a client framing or event schema.

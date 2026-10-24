@@ -25,6 +25,17 @@ const ready = async (client: RealtimeClient) => { await client.connect(); const 
 beforeEach(() => { FakeSocket.instances = []; vi.stubGlobal("WebSocket", FakeSocket); vi.clearAllMocks(); });
 afterEach(() => { vi.unstubAllGlobals(); });
 describe("reused Boson client with Alex's learning tool", () => {
+  it("updates visual context silently in the existing session and awaits its ACK", async () => {
+    const { client } = make(); const ws = await ready(client);
+    const receipt = client.updateWhiteboard({ revision: 5, status: "cleared" });
+    const update = ws.sent.at(-1)!;
+    expect(update.type).toBe("session.update");
+    expect(Object.keys(update.session as object)).toEqual(["instructions"]);
+    expect(ws.sent.filter(e => e.type === "response.create")).toHaveLength(0);
+    ws.receive({ type: "session.updated", session: update.session });
+    expect(await receipt).toMatchObject({ revision: 5, accepted: true });
+    expect(client.connectionState).toBe("open"); client.disconnect();
+  });
   it("waits for session acknowledgement and prevents duplicate connects", async () => {
     const { client } = make(); await client.connect(); await client.connect();
     expect(FakeSocket.instances).toHaveLength(1); expect(client.connectionState).toBe("connecting");

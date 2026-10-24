@@ -5,6 +5,7 @@ React, checks real audio/video frames and learning events, and releases its room
 import asyncio
 import argparse
 import hashlib
+import base64
 import json
 from pathlib import Path
 import struct
@@ -36,7 +37,7 @@ def png(frame, path):
     path.write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack("!2I5B", width, height, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
 
 
-async def main(topic, explanation, avatar_id=None):
+async def main(topic, explanation, avatar_id=None, vision_image=None):
     def prepare():
         response = requests.post("http://localhost:5173/api/lessons", json={"topic": topic}, timeout=45)
         response.raise_for_status()
@@ -59,6 +60,7 @@ async def main(topic, explanation, avatar_id=None):
     tasks = set()
     streams = []
     response_holder = []
+    vision_result = None
     capture_dir = Path("captures"); capture_dir.mkdir(exist_ok=True)
 
     def handle(message):
@@ -115,7 +117,18 @@ async def main(topic, explanation, avatar_id=None):
         await asyncio.to_thread(post, f"/lessons/{lesson['id']}/start")
         await asyncio.wait_for(ready.wait(), 100)
         if errors: raise RuntimeError(errors[0])
-        await asyncio.to_thread(post, f"/lessons/{lesson['id']}/text", {"text": f"Hi Alex. We are learning {topic}. What do you think the main idea is?"})
+        if vision_image:
+            await asyncio.to_thread(post, f"/lessons/{lesson['id']}/visual-context", {"context": {"revision": 1, "status": "pending"}})
+            def analyze():
+                response = requests.post("http://localhost:5173/api/vision/analyze", json={"revision": 1, "image": base64.b64encode(Path(vision_image).read_bytes()).decode()}, timeout=25)
+                if not response.ok: raise RuntimeError(response.json().get("error", "Vision analysis failed"))
+                return response.json()
+            vision_result = await asyncio.to_thread(analyze)
+            receipt = await asyncio.to_thread(post, f"/lessons/{lesson['id']}/visual-context", {"context": {"revision": 1, "status": "observed", "observation": vision_result["observation"]}})
+            vision_result["contextAckMs"] = receipt["ackMs"]
+            print("Actual vision observation:", vision_result["observation"], "| Provider ms:", vision_result["analysisMs"], "| Context ACK ms:", receipt["ackMs"], flush=True)
+        question = "What shapes and colors are visible on the whiteboard right now?" if vision_image else f"Hi. We are learning {topic}. What do you think the main idea is?"
+        await asyncio.to_thread(post, f"/lessons/{lesson['id']}/text", {"text": question})
         await asyncio.wait_for(transcript_done.wait(), 35)
         if errors: raise RuntimeError(errors[0])
         await asyncio.sleep(8)  # allow real-time playout of the short spoken reply
@@ -128,7 +141,7 @@ async def main(topic, explanation, avatar_id=None):
         if counter["video_frames"] < 10 or counter["unique_video_frames"] < 2 or counter["audio_samples"] < 2400:
             raise RuntimeError("Expected moving video and actual audio frames were not received.")
         print("PASS: real avatar video and speech reached the LiveKit user.", flush=True)
-        (capture_dir / "avatar-live-probe-summary.json").write_text(json.dumps({"topic": topic, "concepts": definition["concepts"], "media": counter, "learning_updates": [m["state"] for m in messages if m.get("kind") == "knowledge"]}, indent=2))
+        (capture_dir / "avatar-live-probe-summary.json").write_text(json.dumps({"topic": topic, "concepts": definition["concepts"], "media": counter, "vision": vision_result, "student_transcripts": [m["event"].get("transcript") for m in messages if m.get("event", {}).get("type") == "response.output_audio_transcript.done"], "learning_updates": [m["state"] for m in messages if m.get("kind") == "knowledge"]}, indent=2))
     finally:
         try: await asyncio.to_thread(post, f"/lessons/{lesson['id']}/end")
         finally:
@@ -144,9 +157,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--topic", default="Photosynthesis")
     parser.add_argument("--avatar-id", help="Optional catalog ID; otherwise uses the server's BOSON_AVATAR_ID/default.")
+    parser.add_argument("--vision-image", help="Optional real JPEG to analyze and deliver silently before the first turn.")
     parser.add_argument("--explanation", default="Plants need sunlight, water and carbon dioxide for photosynthesis. Chlorophyll in chloroplasts absorbs light, and plants use that energy to make glucose, storing chemical energy and releasing oxygen as a byproduct.")
     args = parser.parse_args()
-    try: asyncio.run(main(args.topic, args.explanation, args.avatar_id))
+    try: asyncio.run(main(args.topic, args.explanation, args.avatar_id, args.vision_image))
     except Exception as error:
         print("FAIL:", type(error).__name__, str(error), flush=True)
         raise SystemExit(1)

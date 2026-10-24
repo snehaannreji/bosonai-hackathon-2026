@@ -6,6 +6,8 @@ Built from [Boson’s official Higgs Realtime tutorial](https://github.com/boson
 
 ## Run locally
 
+**Whiteboard vision:** the existing canvas now sends event-driven JPEGs to **Gemini 3.5 Flash-Lite on Vertex AI**, using local **Application Default Credentials**—no `GEMINI_API_KEY`. Set `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION=global` in `.env`, then restart the server. During a live lesson, finished edits capture after 120 ms and long strokes can update every 350 ms. One request runs at a time; pending revisions are replaced and stale results discarded. Real observations silently replace visual context through supported Boson `session.update` instructions, without restarting the conversation or triggering speech. Clear immediately invalidates previous drawings. Open **Vision debugging** for measured capture/provider/context timing. Real tests recognized the red circle, added arrow and erased circle; current provider inference is roughly 1.3–1.5 seconds, so consistent sub-second updates are not claimed. [Setup, actual results, browser experiments and limitations](docs/WHITEBOARD-FALLBACK.md).
+
 Install **Node.js 22.22+** and npm first (`node --version`). From this directory:
 
 ```bash

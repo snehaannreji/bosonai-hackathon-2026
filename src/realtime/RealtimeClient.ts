@@ -10,7 +10,9 @@ import {
   type CloseInfo,
   type ServerEvent,
 } from "./events";
-import { buildSessionConfig } from "./sessionConfig";
+import { buildSessionConfig, studentPrompt, SYSTEM_PROMPT } from "./sessionConfig";
+import { VisualContextChannel } from "../whiteboard/contextChannel";
+import type { VisualContext } from "../whiteboard/observations";
 import { RingPlayer } from "../audio/playback";
 import { MicCapture } from "../audio/capture";
 import { dispatch as dispatchTool } from "../tools/registry";
@@ -63,6 +65,7 @@ let logSeq = 0;
  * React components never touch the socket — they render what this reports.
  */
 export class RealtimeClient {
+  private visualContext: VisualContextChannel | null = null;
   private ws: WebSocket | null = null;
   private state: ConnectionState = "idle";
   private player: RingPlayer;
@@ -206,6 +209,7 @@ export class RealtimeClient {
     // carries the ephemeral key.
     const ws = new WebSocket(websocketUrl, ["realtime", `bai-client-secret.${credentials.value}`]);
     this.ws = ws;
+    this.visualContext = new VisualContextChannel(this.cb.lesson ? studentPrompt(this.cb.lesson) : SYSTEM_PROMPT, event => this.send(event));
 
     ws.onopen = () => {
       if (generation !== this.generation) return;
@@ -216,6 +220,7 @@ export class RealtimeClient {
     ws.onmessage = (ev) => { if (generation === this.generation) this.onMessage(ev); };
     ws.onerror = () => this.info("WebSocket error — the close code below has the detail.");
     ws.onclose = (ev) => {
+      this.visualContext?.close(); this.visualContext = null;
       if (generation !== this.generation) return;
       this.connecting = false;
       this.sessionReady = false;
@@ -231,6 +236,7 @@ export class RealtimeClient {
   }
 
   disconnect(): void {
+    this.visualContext?.close(); this.visualContext = null;
     ++this.generation;
     this.connecting = false;
     this.sessionReady = false;
@@ -273,6 +279,11 @@ export class RealtimeClient {
     this.log("send", evt.type, evt);
   }
 
+  updateWhiteboard(context: VisualContext) {
+    if (!this.sessionReady || !this.visualContext) return Promise.reject(new Error("Start the voice conversation before sharing the board."));
+    return this.visualContext.update(context);
+  }
+
   async close(): Promise<void> {
     this.disconnect();
     await this.capture.stop();
@@ -293,6 +304,7 @@ export class RealtimeClient {
     // Log first, act second. Everything the server says shows up in the drawer,
     // including the events no branch below handles.
     this.log("recv", evt.type, evt);
+    this.visualContext?.handle(evt);
     this.cb.onServerEvent?.(evt);
     if (evt.type === SERVER.transcriptionCompleted && typeof evt.item_id === "string" && typeof evt.transcript === "string") {
       this.knowledge.observeHuman(evt.item_id, evt.transcript);

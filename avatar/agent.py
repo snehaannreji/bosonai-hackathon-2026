@@ -291,12 +291,15 @@ async def main():
             async def receive():
                 nonlocal current_item, speaking, truncate_item, tts_generation
                 nonlocal response_transcripts, response_has_fact_log
+                ready_announced = False
                 async for message in ws:
                     event = json.loads(message)
                     kind = event["type"]
                     if kind != "response.output_audio.delta": report("server_event", event=event)
                     if kind in ("session.created", "session.updated"):
-                        report("ready"); set_activity("listening")
+                        if not ready_announced:
+                            ready_announced = True
+                            report("ready"); set_activity("listening")
                     elif kind == "response.created":
                         tts_generation += 1
                         response_transcripts = []

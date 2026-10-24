@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
+import { WhiteboardPanel } from "./ui/WhiteboardPanel";
 import "./index.css";
 
 // StrictMode is left ON deliberately. In development it mounts every component
@@ -9,6 +10,8 @@ import "./index.css";
 // own machine than to leave it lurking.
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <App />
+    {window.location.pathname === "/vision-lab"
+      ? <main className="app vision-lab"><p><a href="/">← Return to TeachBack</a></p><h1>Whiteboard vision lab</h1><p>Event-driven image analysis. No voice session is connected on this isolated page.</p><WhiteboardPanel lab /></main>
+      : <App />}
   </StrictMode>,
 );
