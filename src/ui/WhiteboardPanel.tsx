@@ -63,7 +63,7 @@ export function WhiteboardPanel({ lab = false, experiment = false, diagnostics =
     mounted.current = true; setCapturing(false); setPreviewFrames(0);
     if (preview.current) preview.current.srcObject = null;
     paint();
-    return () => { mounted.current = false; request.current?.abort(); capture.current?.stop(); capture.current = null; shared.current?.close(); if (sessionKey && ownerToken) void revokeWhiteboardPairing(sessionKey, ownerToken); };
+    return () => { mounted.current = false; request.current?.abort(); capture.current?.stop(); capture.current = null; shared.current?.close(); };
   }, []);
   useEffect(() => {
     if (active || !pairing) return;

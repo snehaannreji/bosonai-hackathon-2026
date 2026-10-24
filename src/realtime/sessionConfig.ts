@@ -48,6 +48,7 @@ export const SYSTEM_PROMPT = [
  * choice while learning: no decoder, nothing to go wrong.
  */
 export const AUDIO_RATE = 24000;
+const studentVoice = (lesson?: LessonDefinition) => lesson && normalizeStudent(lesson.student).id === "kai" ? "oliver" : "default";
 
 export function studentPrompt(lesson: LessonDefinition): string {
   const settings = normalizeStudent(lesson.student);
@@ -119,7 +120,7 @@ export function buildSessionConfig(model: string, lesson?: LessonDefinition): Cl
         },
         output: {
           format: { type: "audio/pcm", rate: AUDIO_RATE },
-          voice: "default",
+          voice: studentVoice(lesson),
         },
       },
       // PART 4: the tools the model may call. Plain JSON Schema — there is no

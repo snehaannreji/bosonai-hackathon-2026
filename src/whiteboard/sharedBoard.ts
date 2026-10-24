@@ -5,13 +5,15 @@ export interface PairingDetails { lessonId: string; token: string; expiresAt: nu
 export interface SharedBoardCallbacks { onMarks: (marks: Mark[], complete: boolean) => void; onStatus?: (status: SharedBoardStatus) => void; onPeers?: (peers: number) => void }
 
 const validMarks = (value: unknown): value is Mark[] => Array.isArray(value) && value.length <= 300 && value.every(mark => mark && typeof mark === "object" && Array.isArray((mark as Mark).points));
+const clientId = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 
 export class SharedBoardClient {
   private socket: WebSocket | null = null;
+  private connectionTimer: ReturnType<typeof setTimeout> | null = null;
   private retry: ReturnType<typeof setTimeout> | null = null;
   private stopped = true;
   private attempts = 0;
-  private readonly clientId = crypto.randomUUID().replace(/[^a-zA-Z0-9_-]/gu, "");
+  private readonly clientId = clientId().replace(/[^a-zA-Z0-9_-]/gu, "");
   constructor(private pairing: Pick<PairingDetails, "lessonId" | "token" | "expiresAt">, private callbacks: SharedBoardCallbacks) {}
 
   connect() {
@@ -25,7 +27,15 @@ export class SharedBoardClient {
     const url = new URL("/api/whiteboard/ws", `${protocol}//${location.host}`);
     url.searchParams.set("session", this.pairing.lessonId); url.searchParams.set("token", this.pairing.token); url.searchParams.set("client", this.clientId);
     const socket = new WebSocket(url); this.socket = socket;
-    socket.onopen = () => { if (this.socket !== socket) return; this.attempts = 0; this.callbacks.onStatus?.("connected"); };
+    this.connectionTimer = setTimeout(() => {
+      if (this.socket !== socket || socket.readyState !== WebSocket.CONNECTING) return;
+      socket.close();
+    }, 4000);
+    socket.onopen = () => {
+      if (this.socket !== socket) return;
+      if (this.connectionTimer) clearTimeout(this.connectionTimer);
+      this.connectionTimer = null; this.attempts = 0; this.callbacks.onStatus?.("connected");
+    };
     socket.onmessage = event => {
       if (this.socket !== socket) return;
       let message: { type?: string; marks?: unknown; source?: string; peers?: unknown };
@@ -35,19 +45,22 @@ export class SharedBoardClient {
     };
     socket.onerror = () => { if (this.socket === socket) this.callbacks.onStatus?.("error"); };
     socket.onclose = event => {
-      if (this.socket !== socket) return; this.socket = null;
+      if (this.socket !== socket) return;
+      if (this.connectionTimer) clearTimeout(this.connectionTimer);
+      this.connectionTimer = null; this.socket = null;
       if (this.stopped || event.code === 4001) { this.callbacks.onStatus?.("disconnected"); return; }
       if (Date.now() >= this.pairing.expiresAt || event.code === 1008) { this.callbacks.onStatus?.("expired"); return; }
       this.callbacks.onStatus?.("reconnecting");
-      const delay = Math.min(5000, 350 * 2 ** this.attempts++); this.retry = setTimeout(() => this.open(true), delay);
+      const delay = Math.min(1500, 100 * 2 ** this.attempts++); this.retry = setTimeout(() => this.open(true), delay);
     };
   }
   send(marks: Mark[], complete: boolean) {
     if (this.socket?.readyState !== WebSocket.OPEN) return;
-    this.socket.send(JSON.stringify({ type: complete ? "replace" : "preview", marks, operationId: complete ? crypto.randomUUID() : undefined }));
+    this.socket.send(JSON.stringify({ type: complete ? "replace" : "preview", marks, operationId: complete ? clientId() : undefined }));
   }
   close() {
     this.stopped = true; if (this.retry) clearTimeout(this.retry); this.retry = null;
+    if (this.connectionTimer) clearTimeout(this.connectionTimer); this.connectionTimer = null;
     this.socket?.close(1000, "Device disconnected"); this.socket = null; this.callbacks.onStatus?.("disconnected");
   }
 }

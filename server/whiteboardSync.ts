@@ -30,10 +30,15 @@ const validMarks = (value: unknown): value is Mark[] => Array.isArray(value) && 
 });
 
 function localAddress(): string | null {
-  for (const entries of Object.values(networkInterfaces())) for (const item of entries ?? []) {
-    if (item.family === "IPv4" && !item.internal) return item.address;
-  }
-  return null;
+  const candidates = Object.entries(networkInterfaces()).flatMap(([name, entries]) => (entries ?? [])
+    .filter(item => item.family === "IPv4" && !item.internal)
+    .map(item => ({ name, address: item.address })));
+  const isPrivateLan = (address: string) => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/u.test(address);
+  return candidates.find(item => (item.name === "en0" || item.name === "en1") && isPrivateLan(item.address))?.address
+    ?? candidates.find(item => isPrivateLan(item.address))?.address
+    ?? candidates.find(item => item.name === "en0" || item.name === "en1")?.address
+    ?? candidates[0]?.address
+    ?? null;
 }
 
 function publicOrigin(req: Request): string {
