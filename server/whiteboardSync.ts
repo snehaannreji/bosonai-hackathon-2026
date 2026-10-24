@@ -29,16 +29,26 @@ const validMarks = (value: unknown): value is Mark[] => Array.isArray(value) && 
     && (item.text === undefined || (typeof item.text === "string" && item.text.length <= 500));
 });
 
-function localAddress(): string | null {
-  const candidates = Object.entries(networkInterfaces()).flatMap(([name, entries]) => (entries ?? [])
+export function selectLocalAddress(interfaces: ReturnType<typeof networkInterfaces>): string | null {
+  const candidates = Object.entries(interfaces).flatMap(([name, entries]) => (entries ?? [])
     .filter(item => item.family === "IPv4" && !item.internal)
     .map(item => ({ name, address: item.address })));
   const isPrivateLan = (address: string) => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/u.test(address);
-  return candidates.find(item => (item.name === "en0" || item.name === "en1") && isPrivateLan(item.address))?.address
-    ?? candidates.find(item => isPrivateLan(item.address))?.address
-    ?? candidates.find(item => item.name === "en0" || item.name === "en1")?.address
+  const isWifi = (name: string) => /(wi-?fi|wireless|wlan)/iu.test(name);
+  const isVirtual = (name: string) => /(virtual|vethernet|vpn|loopback|docker|wsl|hyper-v|tailscale|wireguard|vmware|virtualbox|bluetooth|tap|tun|bridge)/iu.test(name);
+  const isWired = (name: string) => /^(ethernet(?:\s+\d+)?|en\d+|eth\d+|en[ops]\d+|enp[\w.]+)$/iu.test(name);
+  return candidates.find(item => isWifi(item.name) && isPrivateLan(item.address))?.address
+    ?? candidates.find(item => isWifi(item.name))?.address
+    ?? candidates.find(item => !isVirtual(item.name) && isWired(item.name) && isPrivateLan(item.address))?.address
+    ?? candidates.find(item => !isVirtual(item.name) && isWired(item.name))?.address
+    ?? candidates.find(item => !isVirtual(item.name) && isPrivateLan(item.address))?.address
+    ?? candidates.find(item => !isVirtual(item.name))?.address
     ?? candidates[0]?.address
     ?? null;
+}
+
+function localAddress(): string | null {
+  return selectLocalAddress(networkInterfaces());
 }
 
 function publicOrigin(req: Request): string {

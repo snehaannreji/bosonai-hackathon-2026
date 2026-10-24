@@ -31,10 +31,10 @@ Use headphones to minimize echo. Microphone access needs localhost or HTTPS. Chr
 
 Start a lesson on the computer, open **Whiteboard**, and choose **Connect tablet**. The app creates a lesson-scoped pairing link and displays it as a QR code. Scan it with the tablet camera; the tablet opens a drawing-only view with pen, eraser, colors, stroke width, undo, redo, clear, connection status, and disconnect. It never requests microphone or speaker access.
 
-For local testing, put the MacBook and tablet on the same Wi-Fi network and keep `npm run dev` running. Vite and the TeachBack server listen on the local network; when the laptop page is opened as `localhost`, the server automatically puts the MacBook's current private IPv4 address into the QR link. Allow incoming Node connections through the macOS firewall if prompted. If automatic address selection is wrong—common with VPNs or multiple adapters—set this in `.env` and restart:
+For local testing, put the computer and tablet on the same Wi-Fi network and keep `npm run dev` running. Vite and the TeachBack server listen on the local network; when the computer page is opened as `localhost`, the server prefers the Wi-Fi IPv4 address when building the QR link. On Windows, check the **Wireless LAN adapter Wi-Fi** section of `ipconfig` if the QR link shows a virtual adapter address. Allow incoming Node.js connections through the firewall on private networks. If automatic address selection is wrong—common with VPNs or multiple adapters—set this in `.env` using the computer's Wi-Fi IPv4 address and restart:
 
 ```dotenv
-PUBLIC_APP_URL=http://YOUR_MAC_WIFI_IP:5173
+PUBLIC_APP_URL=http://YOUR_WIFI_IP:5173
 ```
 
 In a deployed environment, set `PUBLIC_APP_URL=https://your-teachback-domain.example` unless the reverse proxy forwards the public host and protocol correctly. The same origin must proxy ordinary `/api` requests and WebSocket upgrades at `/api/whiteboard/ws` to the Node server.

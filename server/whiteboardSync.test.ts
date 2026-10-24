@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import express from "express";
 import { createServer, type Server } from "node:http";
 import { WebSocket } from "ws";
-import { createWhiteboardSync } from "./whiteboardSync";
+import { createWhiteboardSync, selectLocalAddress } from "./whiteboardSync";
 
 let server: Server | null = null; let sync: ReturnType<typeof createWhiteboardSync> | null = null;
 afterEach(async () => { sync?.close(); sync = null; if (server) await new Promise<void>(resolve => server!.close(() => resolve())); server = null; });
@@ -25,6 +25,14 @@ function connect(url: string) {
 function message(ws: WebSocket, type: string) { return new Promise<Record<string, unknown>>(resolve => { const receive = (raw: WebSocket.RawData) => { const value = JSON.parse(raw.toString()) as Record<string, unknown>; if (value.type === type) resolve(value); else ws.once("message", receive); }; ws.once("message", receive); }); }
 
 describe("tablet whiteboard synchronization", () => {
+  it("prefers the Wi-Fi address over a virtual adapter for tablet links", () => {
+    const interfaces = {
+      "vEthernet (Default Switch)": [{ address: "100.66.19.69", family: "IPv4" as const, internal: false, mac: "00:00:00:00:00:01", netmask: "255.255.255.0", cidr: "100.66.19.69/24" }],
+      "Wi-Fi": [{ address: "192.168.1.42", family: "IPv4" as const, internal: false, mac: "00:00:00:00:00:02", netmask: "255.255.255.0", cidr: "192.168.1.42/24" }],
+    };
+    expect(selectLocalAddress(interfaces)).toBe("192.168.1.42");
+  });
+
   it("uses unpredictable per-lesson tokens and isolates restored board state", async () => {
     const base = await fixture(); const a = await pair(base, "lesson_alpha"); const b = await pair(base, "lesson_beta");
     expect(a.token).not.toBe(b.token); expect(a.token.length).toBeGreaterThan(25); expect(new URL(a.url).hash).toContain("token=");
