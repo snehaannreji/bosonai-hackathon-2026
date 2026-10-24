@@ -89,6 +89,7 @@ describe("avatar server learning bridge", async () => {
     const assess = vi.fn(async () => ({ matchedCriteria: [], misconception: false, reason: "" }));
     const cb = { onEvent: vi.fn(), onKnowledge: vi.fn(), send: vi.fn() };
     const bridge = new AvatarToolBridge(cb, lesson, assess);
+    bridge.observeText("u-map", "This map has a blue line and a river.");
     bridge.handle({
       type: "response.output_audio_transcript.done",
       transcript: "Does the blue line on this map indicate a river?",
@@ -143,6 +144,7 @@ describe("avatar server learning bridge", async () => {
     }));
     const cb = { onEvent: vi.fn(), onKnowledge: vi.fn(), send: vi.fn() };
     const bridge = new AvatarToolBridge(cb, lesson, assess);
+    bridge.observeText("u-topic", "Canada has two official languages.");
     bridge.handle({
       type: "response.output_audio_transcript.done",
       transcript: "What are the two official languages?",
@@ -247,4 +249,44 @@ it("keeps a novice's incorrect explanation and instructor correction separate in
   expect(cb.onKnowledge).toHaveBeenLastCalledWith(expect.objectContaining({
     concept_1: expect.objectContaining({ belief: expect.stringContaining(claim), groundTruth: correction }),
   }));
+});
+
+it("gates avatar drawing on teacher evidence and keeps private corrections out of student tool output", async () => {
+  const { mockLesson } = await import("../src/state/lesson");
+  const onDrawingTool = vi.fn(async () => ({ summary: "Drawn" })), send = vi.fn();
+  const privateAnswer = "PRIVATE chain rule reference answer";
+  const bridge = new AvatarToolBridge({ onEvent: vi.fn(), onKnowledge: vi.fn(), onDrawingTool, send }, { ...mockLesson("Neural networks"), mock: false }, async () => ({ matchedCriteria: [], topicFactTaught: true, misconception: true, reason: privateAnswer, groundTruth: privateAnswer }));
+  const execute = async (id: string, name: string, args: object) => {
+    bridge.handle({ type: "response.created" });
+    bridge.handle({ type: "response.function_call_arguments.done", call_id: id, name, arguments: JSON.stringify(args) });
+    bridge.handle({ type: "response.done", response: { status: "completed" } });
+    await vi.waitFor(() => expect(send.mock.calls.some(([e]) => e.item?.call_id === id)).toBe(true));
+    return send.mock.calls.find(([e]) => e.item?.call_id === id)![0].item.output as string;
+  };
+  expect(JSON.parse(await execute("before-teaching", "draw_shapes", {})).error).toBe("untaught_drawing");
+  expect(onDrawingTool).not.toHaveBeenCalled();
+  const teaching = "A neural network has connected nodes. Draw the nodes as circles joined by lines.";
+  bridge.observeText("nodes", teaching);
+  const feedback = await execute("teach-nodes", "update_understanding", { concept: "topic_fact", evidence: teaching });
+  expect(feedback).not.toContain(privateAnswer);
+  expect(bridge.studentState()!.facts[0].text).toBe(teaching);
+  const shapes = [{ id: "n", tool: "circle", points: [{ x: .1, y: .1 }, { x: .2, y: .2 }] }];
+  expect(JSON.parse(await execute("after-teaching", "draw_shapes", { evidence_ids: ["teacher:nodes"], intent: "Draw the neural network as circles", shapes })).summary).toBe("Drawn");
+  expect(onDrawingTool).toHaveBeenCalledWith("draw_shapes", { shapes });
+});
+
+it("draws from a verbal explanation even when the avatar never calls update_understanding", async () => {
+  const { mockLesson } = await import("../src/state/lesson");
+  const onDrawingTool = vi.fn(async () => ({ summary: "Drawn" })), onStudentKnowledge = vi.fn(), send = vi.fn();
+  const assess = vi.fn(async () => { throw new Error("Assessment is unavailable"); });
+  const bridge = new AvatarToolBridge({ onEvent: vi.fn(), onKnowledge: vi.fn(), onStudentKnowledge, onDrawingTool, send }, { ...mockLesson("Neural networks"), mock: false }, assess);
+  bridge.handle({ type: "conversation.item.input_audio_transcription.completed", item_id: "voice-explanation", transcript: "When drawing a neural network, draw circles for nodes and connect the circles with lines." });
+  expect(onStudentKnowledge).toHaveBeenLastCalledWith(expect.objectContaining({ stage: "introduced", facts: [expect.objectContaining({ sourceId: "voice-explanation" })] }));
+  bridge.handle({ type: "response.created" });
+  const shapes = [{ id: "a", tool: "circle", points: [{ x: .1, y: .1 }, { x: .2, y: .2 }] }];
+  bridge.handle({ type: "response.function_call_arguments.done", call_id: "draw-earned", name: "draw_shapes", arguments: JSON.stringify({ intent: "Sketch a simple neural network layout", shapes }) });
+  bridge.handle({ type: "response.done", response: { status: "completed" } });
+  await vi.waitFor(() => expect(onDrawingTool).toHaveBeenCalledWith("draw_shapes", { shapes }));
+  expect(assess).not.toHaveBeenCalled();
+  expect(bridge.studentState()!.stage).toBe("introduced");
 });

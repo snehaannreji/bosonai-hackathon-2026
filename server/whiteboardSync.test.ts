@@ -50,3 +50,18 @@ describe("tablet whiteboard synchronization", () => {
     await expect(connect(socketUrl(base, "lesson_expire", expiring.token, "lateTablet"))).rejects.toThrow();
   });
 });
+
+it("seeds tablet pairing with the existing AI drawing and preserves IDs through edits", async () => {
+  const base = await fixture(); const lessonId = "lesson_drawing"; const ownerToken = sync!.authorizeLesson(lessonId);
+  const mark = { id: "ai-arrow", owner: "ai", tool: "arrow", color: "#2563eb", width: 3, points: [{ x: 10, y: 20 }, { x: 100, y: 200 }] };
+  const response = await fetch(`${base}/api/whiteboard/pair`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lessonId, ownerToken, initialMarks: [mark] }) });
+  const paired = await response.json() as { token: string };
+  const one = await connect(socketUrl(base, lessonId, paired.token, "computer11"));
+  const two = await connect(socketUrl(base, lessonId, paired.token, "tablet2222"));
+  expect(two.first.marks).toEqual([mark]);
+  const receive = message(one.ws, "replace");
+  const moved = { ...mark, points: [{ x: 20, y: 20 }, { x: 110, y: 200 }] };
+  two.ws.send(JSON.stringify({ type: "replace", operationId: "manual-edit", marks: [moved] }));
+  expect(await receive).toMatchObject({ marks: [moved] });
+  one.ws.close(); two.ws.close();
+});

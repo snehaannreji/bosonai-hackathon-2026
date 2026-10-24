@@ -18,6 +18,8 @@
     "src/realtime/events.ts",
     "src/whiteboard/visionCapability.ts",
     "src/whiteboard/observations.ts",
+    "src/whiteboard/model.ts",
+    "src/whiteboard/drawingTools.ts",
     "src/whiteboard/contextChannel.ts",
     "src/realtime/speechTags.ts",
     "src/realtime/sessionConfig.ts",
@@ -31,6 +33,7 @@
     "src/state/lesson.ts",
     "src/state/student.ts",
     "src/state/topicKnowledge.ts",
-    "src/state/createKnowledgeTracker.ts"
+    "src/state/createKnowledgeTracker.ts",
+    "src/state/studentKnowledge.ts"
   ]
 }

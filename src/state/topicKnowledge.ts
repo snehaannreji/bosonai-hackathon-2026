@@ -24,8 +24,8 @@ const formatLearnedFact = (text: string, questionContext?: string) =>
 
 export function initialTopicKnowledge(lesson: LessonDefinition | null): KnowledgeState {
   return Object.fromEntries((lesson?.concepts ?? []).map(concept => [concept.id, {
-    status: concept.initialBelief ? "misunderstood" : "unknown",
-    evidence: concept.initialBelief ? `${lesson?.studentName ?? studentName(lesson?.student)}’s starting hunch: ${concept.initialBelief}` : "No facts taught yet.",
+    status: "unknown",
+    evidence: "No facts taught yet.",
   }]));
 }
 
@@ -244,7 +244,7 @@ export function studentToolFeedback(lesson: LessonDefinition, result: ToolResult
     return "You are a beginner. Treat the human's explanation as your provisional working belief, even if it seems surprising. Do not correct, fact-check, contradict, or reveal any counterclaim. After acknowledging a taught fact, end your reply with one brief, specific open-ended follow-up question about that fact; do not repeat a generic opener. The independent instructor check is private; do not mention or use its result.";
   }
   if (result.error) {
-    return "The learning update did not succeed. The independent instructor check is private; do not reveal or cite its result. Respond in character based on your own starting familiarity and ask one natural follow-up.";
+    return "The learning update did not succeed. The independent instructor check is private; do not reveal or cite its result. Respond using only teacher facts in CURRENT_STUDENT_KNOWLEDGE and ask one natural follow-up; response style grants no prior knowledge.";
   }
   return "The independent instructor check is private; do not reveal or cite its result. Respond naturally to the taught fact and end with one brief, specific open-ended follow-up question about it. Do not repeat a generic opener.";
 }

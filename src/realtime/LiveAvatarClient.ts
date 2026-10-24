@@ -1,3 +1,4 @@
+import type { StudentKnowledgeSnapshot } from "../state/studentKnowledge";
 import { Room, RoomEvent, Track, type RemoteAudioTrack, type RemoteVideoTrack } from "livekit-client";
 import type { Activity, AudioRenderer, RealtimeCallbacks } from "./RealtimeClient";
 import type { KnowledgeState } from "../state/knowledge";
@@ -21,6 +22,8 @@ export class LiveAvatarClient {
   private lessonId: string | null = null;
   private generation = 0;
   private active = false;
+  private drawingEpoch = 0;
+  private drawings = new Set<string>();
   private mic = false;
   private voiceReady = false;
   private videoReady = false;
@@ -82,7 +85,23 @@ export class LiveAvatarClient {
       this.events = new EventSource(`/api/avatar/lessons/${lesson.id}/events`);
       this.events.onmessage = event => {
         if (generation !== this.generation) return;
-        const message = JSON.parse(event.data) as { kind: string; event?: ServerEvent; state?: KnowledgeState; activity?: Activity; message?: string; emotion?: string; tags?: string; item_id?: string; response_id?: string; status?: string; interrupted?: boolean; name?: string };
+        const message = JSON.parse(event.data) as { kind: string; studentKnowledge?: StudentKnowledgeSnapshot; event?: ServerEvent; state?: KnowledgeState; activity?: Activity; message?: string; emotion?: string; tags?: string; item_id?: string; response_id?: string; status?: string; interrupted?: boolean; name?: string };
+        if (message.kind === "drawing_cancel") { this.drawingEpoch++; return; }
+        if (message.kind === "drawing_request") {
+          const request = JSON.parse(event.data) as { requestId: string; name: string; args: Record<string, unknown> };
+          if (this.drawings.has(request.requestId)) return;
+          this.drawings.add(request.requestId);
+          if (this.drawings.size > 1000) this.drawings.delete(this.drawings.values().next().value!);
+          const epoch = this.drawingEpoch;
+          void Promise.resolve().then(async () => {
+            if (generation !== this.generation || epoch !== this.drawingEpoch) return;
+            let result;
+            try { result = await this.cb.onDrawingTool?.(request.name, request.args) ?? { error: "board_unavailable", summary: "Whiteboard unavailable." }; }
+            catch { result = { error: "drawing_failed", summary: "Could not apply drawing. Inspect board before retrying." }; }
+            if (generation === this.generation) await post(`/api/avatar/lessons/${lesson.id}/drawing-result`, { requestId: request.requestId, result });
+          }).catch(() => {});
+          return;
+        }
         if (message.kind === "server_event" && message.event) {
           this.cb.onServerEvent?.(message.event);
           this.cb.onLog?.({ id: Date.now() + Math.random(), dir: "recv", type: message.event.type, at: Date.now(), raw: message.event });
@@ -93,7 +112,8 @@ export class LiveAvatarClient {
             this.emotionAcknowledgment.observeTeacher(message.event.transcript);
           }
           if (message.event.type === "error") this.cb.onError?.(String((message.event.error as { message?: string } | undefined)?.message ?? "Boson reported a voice session error."));
-        } else if (message.kind === "knowledge" && message.state) this.cb.onKnowledgeChange?.(message.state);
+        } else if (message.kind === "student_knowledge" && message.studentKnowledge) this.cb.onStudentKnowledgeChange?.(message.studentKnowledge);
+        else if (message.kind === "knowledge" && message.state) this.cb.onKnowledgeChange?.(message.state);
         else if (message.kind === "emotion" && isSpeechEmotion(message.emotion)) {
           this.emotionAcknowledgment.noteEmotion(message.emotion, message.item_id);
           this.cb.onLog?.({ id: Date.now() + Math.random(), dir: "info", type: "client.emotion_used", at: Date.now(), raw: message });
@@ -136,7 +156,7 @@ export class LiveAvatarClient {
     return await post(`/api/avatar/lessons/${this.lessonId}/visual-context`, { context }) as ContextReceipt;
   }
   disconnect() {
-    this.active = false; ++this.generation;
+    this.active = false; ++this.generation; this.drawingEpoch++; this.drawings.clear();
     this.events?.close(); this.events = null;
     if (this.timeout) { clearTimeout(this.timeout); this.timeout = null; }
     if (this.meter) { clearInterval(this.meter); this.meter = null; }

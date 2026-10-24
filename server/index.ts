@@ -51,6 +51,9 @@ const app = express();
 app.disable("x-powered-by");
 app.use("/api", (_req, res, next) => { res.setHeader("Cache-Control", "no-store"); next(); });
 app.use("/api/vision", express.json({ limit: "1500kb" }), createVisionService());
+// Structured board geometry can be larger than a text lesson payload.
+app.use("/api/avatar", express.json({ limit: "1500kb" }));
+app.use("/api/whiteboard", express.json({ limit: "1000kb" }));
 app.use(express.json({ limit: "128kb" }));
 const whiteboards = createWhiteboardSync();
 app.use("/api/whiteboard", whiteboards.router);

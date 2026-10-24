@@ -1,3 +1,5 @@
+import { knowledgeInstructions, type StudentKnowledgeSnapshot } from "../state/studentKnowledge";
+import { isDrawingTool, type DrawingHandler } from "../whiteboard/drawingTools";
 import {
   SERVER,
   describeClose,
@@ -51,9 +53,11 @@ export interface RealtimeCallbacks {
   onMicLevel?: (rms: number) => void;
   /** Mints a fresh ephemeral key for each connection. Required. */
   tokenProvider: () => Promise<RealtimeCredentials>;
+  onDrawingTool?: DrawingHandler;
   lesson?: LessonDefinition;
   assessEvidence?: EvidenceAssessor;
   onKnowledgeChange?: (state: KnowledgeState) => void;
+  onStudentKnowledgeChange?: (state: StudentKnowledgeSnapshot) => void;
   onError?: (message: string) => void;
   audioRenderer?: AudioRenderer;
 }
@@ -73,6 +77,9 @@ export class RealtimeClient {
   private cb: RealtimeCallbacks;
   private knowledge: KnowledgeContext;
   private turnEpoch = 0;
+  private lastStudentQuestion: string | undefined;
+  private drawingCalls = 0;
+  private drawingInterrupted = false;
   private generation = 0;
   private sessionReady = false;
   private taggedAudioPending = false;
@@ -127,7 +134,13 @@ export class RealtimeClient {
   constructor(callbacks: RealtimeCallbacks) {
     this.cb = callbacks;
     this.emotionAcknowledgment = new EmotionAcknowledgmentTracker(result => this.log("info", result.type, result));
-    this.knowledge = createKnowledgeTracker(callbacks.onKnowledgeChange, callbacks.lesson, callbacks.assessEvidence);
+    this.knowledge = createKnowledgeTracker(state => {
+      callbacks.onKnowledgeChange?.(state);
+      if (this.knowledge?.student) callbacks.onStudentKnowledgeChange?.(this.knowledge.student.snapshot());
+      this.refreshStudentKnowledge();
+    }, callbacks.lesson, callbacks.assessEvidence, state => {
+      callbacks.onStudentKnowledgeChange?.(state); this.refreshStudentKnowledge();
+    });
     this.player = new RingPlayer((speaking) => {
       if (!speaking) {
         this.taggedAudioPlaying = false;
@@ -177,6 +190,7 @@ export class RealtimeClient {
     const generation = ++this.generation;
     this.sessionReady = false;
     this.knowledge.reset();
+    this.drawingCalls = 0; this.drawingInterrupted = false; this.lastStudentQuestion = undefined;
     this.handledCallIds.clear();
     this.toolBatch = null;
     this.currentAssistantItemId = null;
@@ -209,7 +223,7 @@ export class RealtimeClient {
     // carries the ephemeral key.
     const ws = new WebSocket(websocketUrl, ["realtime", `bai-client-secret.${credentials.value}`]);
     this.ws = ws;
-    this.visualContext = new VisualContextChannel(this.cb.lesson ? studentPrompt(this.cb.lesson) : SYSTEM_PROMPT, event => this.send(event));
+    this.visualContext = new VisualContextChannel(this.studentInstructions(), event => this.send(event));
 
     ws.onopen = () => {
       if (generation !== this.generation) return;
@@ -264,8 +278,9 @@ export class RealtimeClient {
       this.info("sendUserText ignored — the socket is not open.");
       return;
     }
+    this.drawingCalls = 0;
     const item_id = `typed-${Date.now()}-${++logSeq}`;
-    this.knowledge.observeHuman(item_id, text);
+    this.knowledge.observeHuman(item_id, text, this.lastStudentQuestion); this.lastStudentQuestion = undefined;
     this.cb.onServerEvent?.({ type: SERVER.transcriptionCompleted, item_id, transcript: text });
     this.send(userTextItem(text));
     // Adding the message does not start a turn. This does.
@@ -279,6 +294,13 @@ export class RealtimeClient {
     this.log("send", evt.type, evt);
   }
 
+  private studentInstructions() {
+    const base = this.cb.lesson ? studentPrompt(this.cb.lesson) : SYSTEM_PROMPT;
+    return this.knowledge.student ? knowledgeInstructions(base, this.knowledge.student.snapshot()) : base;
+  }
+  private refreshStudentKnowledge() {
+    if (this.sessionReady && this.visualContext) void this.visualContext.setBase(this.studentInstructions()).catch(() => {});
+  }
   updateWhiteboard(context: VisualContext) {
     if (!this.sessionReady || !this.visualContext) return Promise.reject(new Error("Start the voice conversation before sharing the board."));
     return this.visualContext.update(context);
@@ -305,9 +327,19 @@ export class RealtimeClient {
     // including the events no branch below handles.
     this.log("recv", evt.type, evt);
     this.visualContext?.handle(evt);
+    // Tagged speech is complete before playback. Keep the visible transcript
+    // aligned with the validated words instead of streaming rejected text.
+    if (this.cb.audioRenderer === "tagged-tts" && this.knowledge.student) {
+      if (evt.type === SERVER.audioTranscriptDelta) return;
+      if (evt.type === SERVER.audioTranscriptDone && typeof evt.transcript === "string") {
+        const review = this.knowledge.student.review(evt.transcript);
+        if (!review.allowed) this.log("info", "client.knowledge_guard", { item_id: evt.item_id, reason: review.reason });
+        evt = { ...evt, transcript: review.approved_text };
+      }
+    }
     this.cb.onServerEvent?.(evt);
     if (evt.type === SERVER.transcriptionCompleted && typeof evt.item_id === "string" && typeof evt.transcript === "string") {
-      this.knowledge.observeHuman(evt.item_id, evt.transcript);
+      this.knowledge.observeHuman(evt.item_id, evt.transcript, this.lastStudentQuestion); this.lastStudentQuestion = undefined;
       this.emotionAcknowledgment.observeTeacher(evt.transcript);
     }
 
@@ -318,6 +350,7 @@ export class RealtimeClient {
         this.setState("open");
         break;
       case SERVER.responseCreated:
+        this.drawingInterrupted = false;
         ++this.turnEpoch;
         // A new assistant turn. Zero the played-sample counter so the truncate
         // maths below measures into *this* reply, not the whole session.
@@ -340,12 +373,23 @@ export class RealtimeClient {
         break;
 
       case SERVER.audioTranscriptDone:
+        if (typeof evt.transcript === "string" && this.knowledge.student) {
+          const review = this.knowledge.student.review(evt.transcript);
+          this.lastStudentQuestion = review.allowed ? evt.transcript.match(/[^.!?]*\?/gu)?.at(-1)?.trim() : undefined;
+          if (!review.allowed) {
+            this.log("info", "client.knowledge_guard", { item_id: evt.item_id, reason: review.reason, approved_text: review.approved_text });
+            // Native realtime audio may already have played. Do not start a
+            // competing response; refresh permissions for the next turn.
+            this.refreshStudentKnowledge();
+          }
+        }
         if (this.cb.audioRenderer === "tagged-tts" && typeof evt.transcript === "string") {
           void this.playTaggedTranscript(evt);
         }
         break;
 
       case SERVER.speechStarted:
+        this.drawingInterrupted = true; this.drawingCalls = 0;
         ++this.turnEpoch;
         // The user started talking over the model. This is the barge-in path.
         this.info(`User speech detected${typeof evt.item_id === "string" ? ` (${evt.item_id})` : ""}; interruption handling started.`);
@@ -417,6 +461,11 @@ export class RealtimeClient {
     this.startToolCall(callId, name, args);
   }
 
+  private async executeDrawing(name: string, args: Record<string, unknown>) {
+    const permission = this.knowledge.student?.authorizeDrawing(name, args);
+    if (permission && !permission.allowed) return permission;
+    return await this.cb.onDrawingTool?.(name, permission?.args ?? args) ?? { error: "board_unavailable", summary: "Whiteboard is unavailable." };
+  }
   private startToolCall(callId: string, name: string, args: Record<string, unknown>): void {
     // ⚠ The guard that stops the double-fire. See onResponseDone.
     if (this.handledCallIds.has(callId)) return;
@@ -430,7 +479,13 @@ export class RealtimeClient {
     const p = (async () => {
       let result: unknown;
       try {
-        result = await dispatchTool(name, args, this.knowledge);
+        result = name === "prepare_response" && this.knowledge.student
+          ? this.knowledge.student.prepare(args)
+          : isDrawingTool(name)
+          ? this.drawingInterrupted ? { error: "interrupted", summary: "Drawing interrupted. Inspect board before continuing." }
+            : ++this.drawingCalls > 32 ? { error: "drawing_limit", summary: "Drawing call limit reached. Wait for the teacher before continuing." }
+            : await this.executeDrawing(name, args)
+          : await dispatchTool(name, args, this.knowledge);
       } catch (e) {
         // A thrown handler must still produce an output, or the model waits
         // forever for a call_id that never comes back.
@@ -446,8 +501,8 @@ export class RealtimeClient {
         result,
         ms: Date.now() - startedAt,
       });
-      const output = this.cb.lesson && isToolResult(result)
-        ? studentToolFeedback(this.cb.lesson, result)
+      const output = name === "update_understanding" && this.cb.lesson && isToolResult(result)
+        ? studentToolFeedback(this.cb.lesson, result) + (this.knowledge.student ? "\n" + knowledgeInstructions("", this.knowledge.student.snapshot()) : "")
         : JSON.stringify(result);
       batch.outputs.push(functionCallOutput(callId, output));
     })();
@@ -459,6 +514,7 @@ export class RealtimeClient {
    * The turn is over. If it contained tool calls, this is where we answer them.
    */
   private onResponseDone(evt: ServerEvent): void {
+    if (["cancelled", "failed"].includes(responseStatus(evt) ?? "")) this.drawingInterrupted = true;
     // ⚠ The double-fire. Tool calls that already arrived via
     // function_call_arguments.done can appear AGAIN in response.done's output
     // list. We still walk it — occasionally a call shows up only here — but
@@ -490,7 +546,8 @@ export class RealtimeClient {
 
   private async playTaggedTranscript(evt: ServerEvent): Promise<void> {
     if (typeof evt.transcript !== "string") return;
-    const transcript = cleanSpokenTranscript(evt.transcript).trim();
+    const proposed = cleanSpokenTranscript(evt.transcript).trim();
+    const transcript = this.knowledge.student?.review(proposed).approved_text ?? proposed;
     const itemId = typeof evt.item_id === "string" ? evt.item_id : null;
     if (!transcript || (itemId && this.taggedItems.has(itemId))) return;
     if (itemId) {
@@ -604,7 +661,7 @@ export class RealtimeClient {
     for (const out of batch.outputs) this.send(out);
 
     // A newer human turn must not be interrupted by a delayed assessment.
-    if (batch.epoch === this.turnEpoch && status !== "cancelled" && status !== "failed") {
+    if (batch.epoch === this.turnEpoch && this.drawingCalls <= 32 && status !== "cancelled" && status !== "failed") {
       this.send(responseCreate());
     } else {
       this.info(`Tool continuation suppressed (${status ?? "superseded turn"}).`);

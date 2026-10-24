@@ -7,9 +7,9 @@ const convergence = "Convergence means the loss stabilizes and updates become sm
 const update = (t: KnowledgeTracker, evidence: string, status = "understood", concept: Concept = "gradient_direction") => t.update({ concept, status, evidence });
 
 describe("Alex's simulated understanding", () => {
-  it("starts with the intended misconception and no other knowledge", () => {
+  it("starts with no subject knowledge or seeded misconception", () => {
     const state = initialKnowledge();
-    expect(state.gradient_direction.status).toBe("misunderstood");
+    expect(state.gradient_direction.status).toBe("unknown");
     expect(state.learning_rate.status).toBe("unknown");
     expect(state.convergence.status).toBe("unknown");
   });
@@ -31,7 +31,7 @@ describe("Alex's simulated understanding", () => {
   it("rejects reassurance without conceptual evidence", () => {
     const t = new KnowledgeTracker(); t.observeHuman("u1", "You understand now, trust me, that is correct.");
     expect(update(t, "You understand now, trust me, that is correct.").error).toBe("insufficient_evidence");
-    expect(t.snapshot().gradient_direction.status).toBe("misunderstood");
+    expect(t.snapshot().gradient_direction.status).toBe("unknown");
   });
   it("moves through partial to understood using explanations", () => {
     const t = new KnowledgeTracker(); const partial = "The gradient points in the direction of steepest increase.";
@@ -71,7 +71,7 @@ describe("Alex's simulated understanding", () => {
   });
   it("isolates sessions and snapshots, and clears evidence on reset", () => {
     const a = new KnowledgeTracker(); const b = new KnowledgeTracker(); a.observeHuman("u", gradient); update(a, gradient);
-    expect(b.snapshot().gradient_direction.status).toBe("misunderstood");
+    expect(b.snapshot().gradient_direction.status).toBe("unknown");
     const snapshot = a.snapshot(); snapshot.gradient_direction.status = "unknown";
     expect(a.snapshot().gradient_direction.status).toBe("understood");
     a.reset(); expect(update(a, gradient).error).toBe("ungrounded_evidence");

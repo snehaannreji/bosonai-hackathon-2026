@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type PointerEvent } from "react";
+import { applyDrawing, boardObjects, type DrawingHandler } from "../whiteboard/drawingTools";
+import { useEffect, useRef, useState, type PointerEvent, type MutableRefObject } from "react";
 import { BOARD_HEIGHT, BOARD_WIDTH, boardPoint, experimentBoard, markAt, moveMark, renderBoard, type DrawTool, type Mark, type Point } from "../whiteboard/board";
 import { captureWhiteboard, type BoardCapture } from "../whiteboard/capture";
 import { boardSnapshotter } from "../whiteboard/snapshot";
@@ -8,7 +9,7 @@ import QRCode from "qrcode";
 import { createWhiteboardPairing, revokeWhiteboardPairing, SharedBoardClient, type PairingDetails, type SharedBoardStatus } from "../whiteboard/sharedBoard";
 
 const tools: (DrawTool | "move")[] = ["pen", "arrow", "line", "rectangle", "circle", "text", "move", "eraser"];
-export function WhiteboardPanel({ lab = false, experiment = false, diagnostics = false, sessionKey = "", ownerToken = "", active = true, deliverObservation }: { lab?: boolean; experiment?: boolean; diagnostics?: boolean; sessionKey?: string; ownerToken?: string; active?: boolean; deliverObservation?: (context: VisualContext) => Promise<ContextReceipt> }) {
+export function WhiteboardPanel({ lab = false, experiment = false, diagnostics = false, sessionKey = "", ownerToken = "", active = true, drawingHandler, deliverObservation }: { drawingHandler?: MutableRefObject<DrawingHandler | null>; lab?: boolean; experiment?: boolean; diagnostics?: boolean; sessionKey?: string; ownerToken?: string; active?: boolean; deliverObservation?: (context: VisualContext) => Promise<ContextReceipt> }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const preview = useRef<HTMLVideoElement>(null);
   const capture = useRef<BoardCapture | null>(null);
@@ -19,6 +20,7 @@ export function WhiteboardPanel({ lab = false, experiment = false, diagnostics =
   const future = useRef<Mark[][]>([]);
   const shared = useRef<SharedBoardClient | null>(null);
   const previewSentAt = useRef(0);
+  const remoteEditing = useRef(false);
   const pointer = useRef<number | null>(null);
   const mounted = useRef(false);
   const [tool, setTool] = useState<DrawTool | "move">("pen");
@@ -33,6 +35,8 @@ export function WhiteboardPanel({ lab = false, experiment = false, diagnostics =
   const request = useRef<AbortController | null>(null);
   const pipeline = useRef<WhiteboardVisionPipeline | null>(null);
   const revisionClock = useRef(0);
+  const drawingRevision = useRef(0);
+  const fallbackPending = useRef(false);
   const [vision, setVision] = useState<{ configured: boolean; model: string; reason?: string } | null>(null);
   const [enabled, setEnabled] = useState(true);
   const [debug, setDebug] = useState<VisionDebug | null>(null);
@@ -50,8 +54,22 @@ export function WhiteboardPanel({ lab = false, experiment = false, diagnostics =
     renderBoard(ctx, [...marks.current, ...(draft.current ? [draft.current] : [])]);
     capture.current?.changed();
     if (change) {
+      drawingRevision.current++;
       if (pipeline.current) pipeline.current.change(change);
-      else revisionClock.current++;
+      else {
+        revisionClock.current++;
+        // Coalesce active strokes when Gemini is off; only publish complete
+        // geometry on release instead of serializing the board per point.
+        if (change === "intermediate") {
+          if (deliverObservation && !fallbackPending.current) void deliverObservation({ revision: revisionClock.current, status: "pending" }).catch(() => {});
+          fallbackPending.current = true;
+          return;
+        }
+        fallbackPending.current = false;
+        if (deliverObservation) void deliverObservation({ revision: revisionClock.current, status: marks.current.length ? "observed" : "cleared",
+          ...(marks.current.length ? { observation: { revision: revisionClock.current, description: "See the current editable board geometry. No image interpretation is available.", changes: [], visible_text: [], uncertainties: [] } } : {}),
+          board: { revision: drawingRevision.current, objects: boardObjects(marks.current) } }).catch(() => {});
+      }
     }
   };
   const stopCapture = () => {
@@ -95,7 +113,7 @@ export function WhiteboardPanel({ lab = false, experiment = false, diagnostics =
         if (!response.ok) throw new Error(result.error ?? `Vision analysis failed (${response.status}).`);
         return result;
       },
-      deliver: deliverObservation,
+      deliver: deliverObservation ? context => deliverObservation({ ...context, board: { revision: drawingRevision.current, objects: boardObjects(marks.current) } }) : undefined,
       onState: state => {
         revisionClock.current = Math.max(revisionClock.current, state.revision);
         if (mounted.current) setDebug(state);
@@ -130,12 +148,12 @@ export function WhiteboardPanel({ lab = false, experiment = false, diagnostics =
     if (marks.current.length >= 300) return;
     if (tool === "text" && !text.trim()) { setError("Type text or an equation, then click the board to place it."); return; }
     setError(null); pointer.current = event.pointerId; event.currentTarget.setPointerCapture(event.pointerId);
-    draft.current = { tool, color, width: size, points: [point(event)], ...(tool === "text" ? { text: text.slice(0, 500) } : {}) }; paint("intermediate");
+    draft.current = { id: crypto.randomUUID(), owner: "user", tool, color, width: size, points: [point(event)], ...(tool === "text" ? { text: text.slice(0, 500) } : {}) }; paint("intermediate");
   };
   const move = (event: PointerEvent<HTMLCanvasElement>) => {
     if (moving.current && event.pointerId === pointer.current) {
       const next = point(event), { index, origin, original } = moving.current;
-      marks.current[index] = moveMark(original, next.x - origin.x, next.y - origin.y); paint("intermediate");
+      marks.current = marks.current.map((mark, i) => i === index ? moveMark(original, next.x - origin.x, next.y - origin.y) : mark); paint("intermediate");
       if (performance.now() - previewSentAt.current > 45) { previewSentAt.current = performance.now(); shared.current?.send(marks.current, false); } return;
     }
     if (!draft.current || event.pointerId !== pointer.current) return;
@@ -152,13 +170,38 @@ export function WhiteboardPanel({ lab = false, experiment = false, diagnostics =
     if (event.pointerId !== pointer.current) return;
     const before = moving.current ? marks.current.map((mark, index) => index === moving.current!.index ? moving.current!.original : mark) : marks.current;
     if (moving.current) { if (cancel) marks.current[moving.current.index] = moving.current.original; moving.current = null; }
-    if (draft.current && !cancel) marks.current.push(draft.current);
+    if (draft.current && !cancel) marks.current = [...marks.current, draft.current];
     if (!cancel) { history.current.push(before); if (history.current.length > 100) history.current.shift(); future.current = []; }
     draft.current = null; pointer.current = null; setCount(marks.current.length); paint("complete");
     shared.current?.send(marks.current, true);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   };
   const replace = (next: Mark[], record = true, send = true) => { if (record) { history.current.push(marks.current); if (history.current.length > 100) history.current.shift(); future.current = []; } marks.current = next; draft.current = null; moving.current = null; pointer.current = null; setCount(next.length); paint(next.length ? "complete" : "clear"); if (send) shared.current?.send(next, true); };
+  // The handler reads refs at call time, never a stale render snapshot. Atomic
+  // commands cannot race a pointer gesture; the model can retry after release.
+  useEffect(() => {
+    if (!drawingHandler) return;
+    drawingHandler.current = (name, args) => {
+      if (!active) return { error: "session_ended", summary: "The lesson is no longer active." };
+      if (pointer.current !== null || remoteEditing.current) return { error: "board_busy", summary: "The teacher is editing. Wait for their next turn before retrying." };
+      const operation = applyDrawing(name, args, marks.current, drawingRevision.current);
+      if (operation.changed) {
+        history.current.push(marks.current); if (history.current.length > 100) history.current.shift(); future.current = [];
+        marks.current = operation.marks; drawingRevision.current++;
+        setCount(marks.current.length); paint();
+        if (pipeline.current) pipeline.current.change("ai");
+        else {
+          revisionClock.current++;
+          if (deliverObservation) void deliverObservation({ revision: revisionClock.current, status: "observed",
+            observation: { revision: revisionClock.current, description: "The student updated the board. See structured geometry; this is not a new teacher instruction.", changes: [], visible_text: [], uncertainties: [] },
+            board: { revision: drawingRevision.current, objects: boardObjects(marks.current) } }).catch(() => {});
+        }
+        shared.current?.send(marks.current, true);
+      }
+      return operation.result;
+    };
+    return () => { drawingHandler.current = null; };
+  }, [drawingHandler, active, sessionKey, deliverObservation]);
   const undo = () => { const previous = history.current.pop(); if (!previous) return; future.current.push(marks.current); replace(previous, false); };
   const redo = () => { const next = future.current.pop(); if (!next) return; history.current.push(marks.current); replace(next, false); };
   const connectTablet = async () => {
@@ -166,9 +209,9 @@ export function WhiteboardPanel({ lab = false, experiment = false, diagnostics =
     setPairingBusy(true); setError(null);
     try {
       if (!ownerToken) throw new Error("This lesson has no tablet pairing credential. Restart the local server and start a new lesson.");
-      const details = await createWhiteboardPairing(sessionKey, ownerToken); setPairing(details); setPairingQr(await QRCode.toDataURL(details.url, { width: 260, margin: 1, errorCorrectionLevel: "M" })); setPairingOpen(true);
+      const details = await createWhiteboardPairing(sessionKey, ownerToken, marks.current); setPairing(details); setPairingQr(await QRCode.toDataURL(details.url, { width: 260, margin: 1, errorCorrectionLevel: "M" })); setPairingOpen(true);
       shared.current?.close();
-      const connection = new SharedBoardClient(details, { onStatus: setTabletStatus, onPeers: setTabletPeers, onMarks: (next, complete) => { if (complete) replace(next, true, false); else { marks.current = next; draft.current = null; setCount(next.length); paint("intermediate"); } } });
+      const connection = new SharedBoardClient(details, { onStatus: status => { setTabletStatus(status); if (status !== "connected") remoteEditing.current = false; }, onPeers: peers => { setTabletPeers(peers); if (peers < 2) remoteEditing.current = false; }, onMarks: (next, complete) => { remoteEditing.current = !complete; if (complete) replace(next, true, false); else { marks.current = next; draft.current = null; setCount(next.length); paint("intermediate"); } } });
       shared.current = connection; connection.connect();
     } catch (error) { setError(error instanceof Error ? error.message : "Could not create a tablet link."); }
     finally { setPairingBusy(false); }

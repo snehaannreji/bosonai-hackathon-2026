@@ -8,7 +8,7 @@ it("runs the no-key text lesson through the real transcript and learning reducer
   const client = new MockClient({ tokenProvider: async () => { throw new Error("Mock must not mint credentials"); }, onKnowledgeChange: next => { state = next; }, onServerEvent: evt => { transcript = transcriptReducer(transcript, evt, 1); } });
   await client.connect();
   await client.sendUserText("You understand now, that is correct.");
-  expect(state.gradient_direction.status).toBe("misunderstood");
+  expect(state.gradient_direction.status).toBe("unknown");
   await client.sendUserText("The gradient points in the direction of steepest increase of loss. The negative gradient goes downhill to decrease the loss.");
   expect(state.gradient_direction.status).toBe("understood");
   await client.sendUserText("The learning rate controls the step size. A large rate can overshoot, while a small rate is slow.");

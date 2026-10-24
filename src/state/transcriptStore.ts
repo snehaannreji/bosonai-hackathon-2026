@@ -341,7 +341,10 @@ export function transcriptReducer(
       // accumulated deltas — if we joined them wrongly, this is the fix.
       const rawTranscript = str(evt.transcript);
       const authoritative = rawTranscript === undefined ? undefined : cleanSpokenTranscript(rawTranscript);
-      return updateItem(state, itemId, (it) =>
+      // Guarded speech may deliberately withhold deltas until the complete
+      // utterance has been checked. A done-only transcript still needs an item.
+      const current = state.items[itemId] ? state : addItem(state, { kind: "assistant", itemId, text: "", status: "streaming", at: now }, prevId);
+      return updateItem(current, itemId, (it) =>
         it.kind === "assistant"
           ? {
               ...it,

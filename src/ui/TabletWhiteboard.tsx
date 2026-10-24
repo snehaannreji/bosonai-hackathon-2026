@@ -24,7 +24,7 @@ export function TabletWhiteboard() {
   const point = (event: PointerEvent<HTMLCanvasElement>) => boardPoint({ x: event.clientX, y: event.clientY }, event.currentTarget.getBoundingClientRect());
   const down = (event: PointerEvent<HTMLCanvasElement>) => {
     if (!event.isPrimary || event.button !== 0 || status === "expired" || status === "error" || status === "disconnected") return;
-    pointer.current = event.pointerId; event.currentTarget.setPointerCapture(event.pointerId); draft.current = { tool, color, width: size, points: [point(event)] }; paint();
+    pointer.current = event.pointerId; event.currentTarget.setPointerCapture(event.pointerId); draft.current = { id: crypto.randomUUID(), owner: "user", tool, color, width: size, points: [point(event)] }; paint();
   };
   const move = (event: PointerEvent<HTMLCanvasElement>) => {
     if (!draft.current || pointer.current !== event.pointerId) return;

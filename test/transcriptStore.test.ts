@@ -199,3 +199,8 @@ describe("transcriptReducer, constructed sequences", () => {
     expect(item.kind === "system" && item.text).toMatch(/timed out/);
   });
 });
+
+it("records a complete guarded transcript when unreviewed deltas were withheld", () => {
+  const state = transcriptReducer(emptyTranscript, { type: "response.output_audio_transcript.done", item_id: "guarded", transcript: "Could you show me a simple example?" }, 1);
+  expect(toList(state)).toMatchObject([{ kind: "assistant", status: "complete", text: "Could you show me a simple example?" }]);
+});

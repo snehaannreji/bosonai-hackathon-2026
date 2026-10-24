@@ -48,6 +48,23 @@ class FakeSocket:
         return stream()
 
 class AgentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_student_speech_is_reviewed_before_tagged_synthesis(self):
+        pending = {}
+        def reviewer(kind, **data):
+            self.assertEqual(kind, "speech_review")
+            self.assertEqual(data["text"], "An untaught expert answer")
+            pending[data["request_id"]].set_result("Could you show me a simple example?")
+        approved = await agent.review_student_speech("An untaught expert answer", "r1", pending, reviewer)
+        self.assertEqual(approved, "Could you show me a simple example?")
+        self.assertEqual(pending, {})
+
+    async def test_student_speech_review_fails_closed_on_timeout(self):
+        pending = {}
+        approved = await agent.review_student_speech("An untaught answer", "r2", pending, lambda *_args, **_kwargs: None, timeout=0.001)
+        self.assertNotIn("untaught answer", approved)
+        self.assertIn("simple example", approved)
+        self.assertEqual(pending, {})
+
     def test_fact_logging_responses_and_immediate_followups_are_neutral(self):
         tool_response = {"response": {"output": [
             {"type": "function_call", "name": "update_understanding", "call_id": "fact-1"},
@@ -109,11 +126,24 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         self.delete.assert_called_once()
         self.assertTrue(self.delete.call_args.args[0].endswith("/avatar/sessions/test-session"))
         self.room.disconnect.assert_awaited_once()
+    def test_capacity_message_includes_provider_retry_delay(self):
+        response = SimpleNamespace(status_code=429, headers={"Retry-After": "30"}, json=lambda: {"error": {"code": "capacity_exhausted"}})
+        self.assertIn("Retry after 30 seconds", agent.avatar_session_failure(response))
+
+    def test_billing_refusal_is_not_reported_as_temporary_capacity(self):
+        response = SimpleNamespace(status_code=429, json=lambda: {"error": {"type": "insufficient_quota"}})
+        message = agent.avatar_session_failure(response)
+        self.assertIn("account credit", message)
+        self.assertNotIn("capacity is currently full", message)
+
     async def test_capacity_refusal_does_not_retry_or_join_a_room(self):
         self.post.return_value = SimpleNamespace(ok=False, status_code=429, json=lambda: {"error": {"code": "capacity_exhausted"}})
         await self.run_main()
         self.post.assert_called_once(); self.delete.assert_not_called(); self.room.connect.assert_not_called()
         self.assertIn("capacity_exhausted", self.logs.getvalue())
+        self.assertIn("capacity is currently full", self.logs.getvalue())
+        self.assertIn("voice + photo", self.logs.getvalue())
+        self.assertNotIn("Check account access, credit", self.logs.getvalue())
         self.assertNotIn("test-only-key", self.logs.getvalue())
     async def test_account_avatar_id_uses_the_same_official_livekit_session_request(self):
         self.room.connect.side_effect = RuntimeError("stop after provider request")

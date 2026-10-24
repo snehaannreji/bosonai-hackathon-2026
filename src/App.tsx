@@ -1,3 +1,5 @@
+import { StudentKnowledge, type StudentKnowledgeSnapshot } from "./state/studentKnowledge";
+import type { DrawingHandler } from "./whiteboard/drawingTools";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { RealtimeClient, type Activity, type AudioRenderer, type ConnectionState, type LogEntry, type RealtimeCallbacks } from "./realtime/RealtimeClient";
 import { MockClient } from "./realtime/MockClient";
@@ -46,6 +48,7 @@ export default function App() {
   const [text, setText] = useState("");
   const [transcript, setTranscript] = useState<TranscriptState>(emptyTranscript);
   const [knowledge, setKnowledge] = useState<KnowledgeState>({});
+  const [studentKnowledge, setStudentKnowledge] = useState<StudentKnowledgeSnapshot | null>(null);
   const [topic, setTopic] = useState("");
   const [instructorNotes, setInstructorNotes] = useState("");
   const [familiarity, setFamiliarity] = useState(0);
@@ -76,6 +79,7 @@ export default function App() {
   const [transcriptCollapsed, setTranscriptCollapsed] = useState(false);
   const [completionDismissed, setCompletionDismissed] = useState(false);
   const whiteboardRef = useRef<HTMLElement>(null);
+  const drawingHandler = useRef<DrawingHandler | null>(null);
   const client = useRef<RealtimeClient | MockClient | LiveAvatarClient | null>(null);
   const micBusy = useRef(false);
   const connected = connection === "open";
@@ -127,18 +131,25 @@ export default function App() {
     return () => { active = false; };
   }, [mode, avatarReload]);
 
-  const start = async () => {
+  const start = async (requestedMode: Mode = mode) => {
     if (busy) return;
+    setMode(requestedMode);
     const version = ++startupVersion.current;
     const abort = new AbortController(); startupAbort.current = abort;
     setError(null); setPreparing(true); setConnection("connecting");
     try {
       if (client.current) await client.current.close();
       if (version !== startupVersion.current) return;
-      const prepared = await prepareLesson(topic, mode === "mock", familiarity, studentName, instructorNotes, abort.signal, student);
+      const prepared = await prepareLesson(topic, requestedMode === "mock", familiarity, studentName, instructorNotes, abort.signal, student);
       if (version !== startupVersion.current) return;
-      setLesson(prepared.lesson); setInstructorGuide(prepared.instructorGuide); setKnowledge(initialTopicKnowledge(prepared.lesson)); setTranscript(emptyTranscript); setLog([]); setEmotionLog([]); setCompletionDismissed(false); setWhiteboardOpen(false); setDeveloperOpen(false);
+      setLesson(prepared.lesson); setStudentKnowledge(new StudentKnowledge(prepared.lesson).snapshot()); setInstructorGuide(prepared.instructorGuide); setKnowledge(initialTopicKnowledge(prepared.lesson)); setTranscript(emptyTranscript); setLog([]); setEmotionLog([]); setCompletionDismissed(false); setWhiteboardOpen(false); setDeveloperOpen(false);
       const callbacks: RealtimeCallbacks = {
+        onDrawingTool: (name, args) => {
+          if (version !== startupVersion.current) return { error: "session_ended", summary: "This lesson ended." };
+          setWhiteboardOpen(true);
+          return drawingHandler.current?.(name, args) ?? { error: "board_unavailable", summary: "Whiteboard is not ready. Try again." };
+        },
+        onStudentKnowledgeChange: state => { if (version === startupVersion.current) setStudentKnowledge(state); },
         tokenProvider: fetchToken, lesson: prepared.lesson, assessEvidence: lessonAssessor(prepared.lesson, prepared.instructorGuide), audioRenderer,
         onConnectionState: state => { if (version === startupVersion.current) setConnection(state); }, onActivity: activity => { if (version === startupVersion.current) setActivity(activity); },
         onLog: entry => {
@@ -151,7 +162,7 @@ export default function App() {
         onKnowledgeChange: state => { if (version === startupVersion.current) setKnowledge(state); },
         onServerEvent: evt => { if (version === startupVersion.current) setTranscript(s => transcriptReducer(s, evt, Date.now())); },
       };
-      const next = mode === "avatar" ? new LiveAvatarClient(callbacks, avatarId, track => { if (version === startupVersion.current) setVideoTrack(track); }, audioRenderer) : mode === "mock" ? new MockClient(callbacks) : new RealtimeClient(callbacks);
+      const next = requestedMode === "avatar" ? new LiveAvatarClient(callbacks, avatarId, track => { if (version === startupVersion.current) setVideoTrack(track); }, audioRenderer) : requestedMode === "mock" ? new MockClient(callbacks) : new RealtimeClient(callbacks);
       client.current = next;
       setPreparing(false);
       await next.connect();
@@ -200,11 +211,12 @@ export default function App() {
           <InteractionStatus connection={connection} activity={activity} micActive={micActive} micLevel={micLevel} name={name} hasError={Boolean(error)} />
           <div className="classroom-controls">{mode !== "mock" && <MicButton active={micActive} level={micLevel} disabled={!connected || micPending} onToggle={() => void toggleMic()} />}<button className="whiteboard-launch" onClick={() => setWhiteboardOpen(true)}>✎ Open whiteboard</button></div>
           {error && <p className="error classroom-error" role="alert">{error}</p>}
+          {mode === "avatar" && error?.includes("capacity_exhausted") && <button type="button" disabled={busy} onClick={() => void start("voice")}>Start with voice + photo</button>}
         </section>
-        <LearningMap lesson={lesson} state={knowledge} preparing={preparing} studentName={name} instructorGuide={instructorGuide} emotionRecords={emotionRecords} />
+        <LearningMap studentKnowledge={studentKnowledge} lesson={lesson} state={knowledge} preparing={preparing} studentName={name} instructorGuide={instructorGuide} emotionRecords={emotionRecords} />
         <section className="conversation-workspace"><div className="transcript-wrap" aria-label="Conversation transcript"><TranscriptPanel state={transcript} topic={lesson.topic} name={name} collapsed={transcriptCollapsed} onToggle={() => setTranscriptCollapsed(value => !value)} /></div><form className="composer" onSubmit={e => { e.preventDefault(); send(); }}><input aria-label="Your explanation" value={text} onChange={e => setText(e.target.value)} placeholder={connected ? `Type an explanation for ${name}…` : "Reconnect to continue…"} disabled={!connected} /><button className="send" disabled={!connected || !text.trim()} aria-label="Send explanation">↑</button></form><div className="conversation-actions"><button disabled={!connected || activity === "thinking" || activity === "speaking"} onClick={() => send(`Can you teach back what I explained? Try a small example and tell me what still confuses you, ${name}.`)}>↗ Ask {name} to teach it back</button></div></section>
       </div>
-      <aside ref={whiteboardRef} className={`whiteboard-workspace ${whiteboardOpen ? "open" : ""}`} aria-label="Classroom whiteboard" aria-hidden={!whiteboardOpen}><div className="whiteboard-workspace-head"><div><span>TEACHING TOOL</span><strong>Whiteboard</strong></div><div>{mode !== "mock" && <MicButton active={micActive} level={micLevel} disabled={!connected || micPending} onToggle={() => void toggleMic()} />}<button className="close-workspace" onClick={() => setWhiteboardOpen(false)}>Close ×</button></div></div><WhiteboardPanel sessionKey={lesson.id} ownerToken={lesson.whiteboardOwnerToken} active={connected} deliverObservation={deliverWhiteboard} diagnostics={developerOpen} experiment={new URLSearchParams(window.location.search).get("whiteboardTest") === "1"} /></aside>
+      <aside ref={whiteboardRef} className={`whiteboard-workspace ${whiteboardOpen ? "open" : ""}`} aria-label="Classroom whiteboard" aria-hidden={!whiteboardOpen}><div className="whiteboard-workspace-head"><div><span>TEACHING TOOL</span><strong>Whiteboard</strong></div><div>{mode !== "mock" && <MicButton active={micActive} level={micLevel} disabled={!connected || micPending} onToggle={() => void toggleMic()} />}<button className="close-workspace" onClick={() => setWhiteboardOpen(false)}>Close ×</button></div></div><WhiteboardPanel key={lesson.id} drawingHandler={drawingHandler} sessionKey={lesson.id} ownerToken={lesson.whiteboardOwnerToken} active={connected} deliverObservation={deliverWhiteboard} diagnostics={developerOpen} experiment={new URLSearchParams(window.location.search).get("whiteboardTest") === "1"} /></aside>
       <details className="developer-panel" open={developerOpen} onToggle={event => setDeveloperOpen(event.currentTarget.open)}><summary>Developer &amp; diagnostics <span>{log.length} events</span></summary><div className="developer-panel-body"><div><strong>Connection</strong><p>{connection} · {activity} · {modeLabel}</p></div><div><strong>Whiteboard vision</strong><p>{whiteboardOpen ? "Open the whiteboard to inspect capture and latency diagnostics." : "Open the whiteboard, then return here to enable diagnostics."}</p></div><DebugDrawer entries={log} embedded /></div></details>
       <footer>YOU TEACH. {name.toUpperCase()} LEARNS. YOU UNDERSTAND.<span>Powered by Boson Higgs Realtime</span></footer>
     </>}

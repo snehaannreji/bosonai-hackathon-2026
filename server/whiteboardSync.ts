@@ -9,7 +9,7 @@ const MAX_MARKS = 300;
 const MAX_MESSAGE_BYTES = 900_000;
 
 type Point = { x: number; y: number };
-type Mark = { tool: string; color: string; width: number; points: Point[]; text?: string };
+type Mark = { id?: string; owner?: "ai" | "user"; tool: string; color: string; width: number; points: Point[]; text?: string };
 type Peer = { socket: WebSocket; clientId: string };
 type Session = { token: string; tokenHash: string; expiresAt: number; marks: Mark[]; revision: number; peers: Set<Peer>; operations: Set<string> };
 
@@ -22,6 +22,8 @@ const validMarks = (value: unknown): value is Mark[] => Array.isArray(value) && 
   if (!mark || typeof mark !== "object") return false;
   const item = mark as Partial<Mark>;
   return ["pen", "eraser", "line", "arrow", "rectangle", "circle", "text"].includes(item.tool ?? "")
+    && (item.id === undefined || (typeof item.id === "string" && /^[a-zA-Z0-9_-]{1,64}$/u.test(item.id)))
+    && (item.owner === undefined || item.owner === "ai" || item.owner === "user")
     && typeof item.color === "string" && /^#[0-9a-f]{6}$/iu.test(item.color)
     && typeof item.width === "number" && item.width >= 1 && item.width <= 20
     && Array.isArray(item.points) && item.points.length <= 2000
@@ -71,10 +73,11 @@ export function createWhiteboardSync({ pairingTtlMs = PAIRING_TTL_MS }: { pairin
     const lessonId = req.body?.lessonId;
     if (!validId(lessonId)) return res.status(400).json({ error: "Invalid whiteboard lesson." });
     if (typeof req.body?.ownerToken !== "string" || owners.get(lessonId) !== hash(req.body.ownerToken)) return res.status(403).json({ error: "This browser does not own the whiteboard lesson." });
+    if (req.body?.initialMarks !== undefined && !validMarks(req.body.initialMarks)) return res.status(400).json({ error: "Invalid initial board." });
     let session = sessions.get(lessonId);
     if (!session) {
       const token = randomBytes(24).toString("base64url");
-      session = { token, tokenHash: hash(token), expiresAt: Date.now() + pairingTtlMs, marks: [], revision: 0, peers: new Set(), operations: new Set() };
+      session = { token, tokenHash: hash(token), expiresAt: Date.now() + pairingTtlMs, marks: req.body.initialMarks ?? [], revision: 0, peers: new Set(), operations: new Set() };
       sessions.set(lessonId, session);
     }
     const url = new URL("/tablet", publicOrigin(req));

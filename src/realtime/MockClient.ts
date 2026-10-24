@@ -15,12 +15,12 @@ export class MockClient {
   private resolvedMisconceptions = new Set<string>();
   private sequence = 0;
   readonly micActive = false;
-  constructor(private cb: RealtimeCallbacks) { this.tracker = createKnowledgeTracker(cb.onKnowledgeChange, cb.lesson, cb.assessEvidence); }
+  constructor(private cb: RealtimeCallbacks) { this.tracker = createKnowledgeTracker(state => { cb.onKnowledgeChange?.(state); if (this.tracker?.student) cb.onStudentKnowledgeChange?.(this.tracker.student.snapshot()); }, cb.lesson, cb.assessEvidence, cb.onStudentKnowledgeChange); }
   async connect() {
     this.active = true;
     this.tracker.reset(); this.explanations = []; this.unresolvedMisconception = null; this.resolvedMisconceptions.clear();
     this.cb.onConnectionState?.("open");
-    this.reply(this.cb.lesson ? `Hey, I’m ${this.cb.lesson.studentName ?? studentName(this.cb.lesson.student)}. ${this.cb.lesson.openingQuestion}` : "Hey, I'm Maya. I thought the gradient points toward the minimum. Is that how it works?");
+    this.reply(this.cb.lesson ? `Hey, I’m ${this.cb.lesson.studentName ?? studentName(this.cb.lesson.student)}. ${this.cb.lesson.openingQuestion}` : "Hey, I'm Maya. What does gradient descent mean?");
   }
   disconnect() { this.active = false; this.cb.onConnectionState?.("closed"); this.cb.onActivity?.("idle"); }
   async close() { this.disconnect(); }
@@ -32,6 +32,9 @@ export class MockClient {
     this.tracker.observeHuman(item, text);
     this.cb.onServerEvent?.({ type: "conversation.item.input_audio_transcription.completed", item_id: item, transcript: text });
     if (this.cb.lesson) {
+      if (/[?？]/u.test(text) && !/teach back|explain it back|quiz/i.test(text)) {
+        this.reply("I haven't learned what that means yet. Could you show me with a simple example?"); return;
+      }
       const settings = this.cb.lesson.student;
       if (/teach back|explain it back|quiz/i.test(text)) {
         if (!this.explanations.length) this.reply(`I’m still new to ${this.cb.lesson.topic}. What would you like to teach me first?`);
@@ -44,7 +47,7 @@ export class MockClient {
       this.cb.onServerEvent?.({ type: "response.function_call_arguments.done", call_id: call, name: "update_understanding", arguments: JSON.stringify(args) });
       const result = await dispatch("update_understanding", args, this.tracker);
       this.cb.onServerEvent?.({ type: CLIENT_TOOL_RESULT, call_id: call, result, ms: 0 });
-      if (!result.error) this.explanations.push(text);
+      if (!result.error && this.tracker.student?.snapshot().facts.some(f => f.sourceId === item)) this.explanations.push(text);
       const level = this.cb.lesson.student?.level ?? "balanced";
       const selected: StudentSettings = this.cb.lesson.student ?? { id: "maya", level };
       if (!result.error && this.unresolvedMisconception && soundsLikeCorrection(text)) {
@@ -107,10 +110,10 @@ export class MockClient {
     if (/teach back|explain it back|quiz/i.test(text)) {
       this.reply(state.gradient_direction.status === "understood"
         ? "Let me try: the gradient points uphill, so I take a step the other way to lower the loss. For a positive gradient, I would decrease the parameter. Did I get that?"
-        : "I still think the gradient points toward the minimum. Could you explain which direction makes the loss increase?");
+        : "Could you show me what that means with a simple example?");
     } else this.reply(learned
       ? "Oh, that helps. Could we try a small example so I can check I have it right?"
-      : "I'm still a little confused. What direction does the gradient point, and why would we step the other way?");
+      : "Could you explain that idea with a simple example?");
   }
   private reply(text: string) {
     const item_id = `mock-alex-${++this.sequence}`;

@@ -1,14 +1,5 @@
-export const BOARD_WIDTH = 640;
-export const BOARD_HEIGHT = 480;
-export type Point = { x: number; y: number };
-export type DrawTool = "pen" | "eraser" | "line" | "arrow" | "rectangle" | "circle" | "text";
-export interface Mark {
-  tool: DrawTool;
-  color: string;
-  width: number;
-  points: Point[];
-  text?: string;
-}
+import { BOARD_WIDTH, BOARD_HEIGHT, type Mark, type Point } from "./model";
+export * from "./model";
 export function markAt(marks: readonly Mark[], point: Point): number {
   for (let i = marks.length - 1; i >= 0; i--) {
     const mark = marks[i]; if (mark.tool === "eraser" || !mark.points.length) continue;
@@ -20,6 +11,10 @@ export function markAt(marks: readonly Mark[], point: Point): number {
   return -1;
 }
 export function moveMark(mark: Mark, dx: number, dy: number): Mark {
+  if (!mark.points.length) return mark;
+  const xs = mark.points.map(p => p.x), ys = mark.points.map(p => p.y);
+  dx = Math.max(-Math.min(...xs), Math.min(BOARD_WIDTH - Math.max(...xs), dx));
+  dy = Math.max(-Math.min(...ys), Math.min(BOARD_HEIGHT - Math.max(...ys), dy));
   return { ...mark, points: mark.points.map(p => ({ x: p.x + dx, y: p.y + dy })) };
 }
 export function boardPoint(client: Point, bounds: { left: number; top: number; width: number; height: number }): Point {

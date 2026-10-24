@@ -1,3 +1,5 @@
+import { knowledgeInstructions, StudentKnowledge } from "../src/state/studentKnowledge";
+import { DrawingRelay } from "./drawingRelay";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -20,6 +22,7 @@ import { userTextItem, responseCreate, type ClientEvent } from "../src/realtime/
 type StreamMessage = { kind: string; [key: string]: unknown };
 interface Lesson {
   visualContext: VisualContextChannel;
+  drawing: DrawingRelay;
   id: string; room: string; avatarId: string; audioRenderer: "realtime" | "tagged-tts"; child: ChildProcessWithoutNullStreams | null;
   definition?: LessonDefinition; avatarSessionId?: string; listeners: Set<Response>; history: StreamMessage[];
   bridge: AvatarToolBridge; ready: boolean; ending: boolean; timer: ReturnType<typeof setTimeout>;
@@ -51,7 +54,7 @@ export function createAvatarRouter(apiKey: string | undefined, lessonService: Le
   const end = async (lesson: Lesson) => {
     if (lesson.ending) return;
     lesson.ending = true; clearTimeout(lesson.timer);
-    lesson.visualContext.close();
+    lesson.visualContext.close(); lesson.drawing.cancel();
     lesson.child?.kill("SIGINT");
     const force = setTimeout(() => lesson.child?.kill("SIGKILL"), lesson.avatarSessionId ? 10000 : 75000); force.unref();
     // Backup release also covers a worker crash. Releasing an ended session is safe.
@@ -101,8 +104,21 @@ export function createAvatarRouter(apiKey: string | undefined, lessonService: Le
     const id = randomUUID();
     const room = `teachback-${id}`;
     const lesson = { id, room, avatarId, audioRenderer, definition, child: null, listeners: new Set(), history: [], ready: false, ending: false } as unknown as Lesson;
-    lesson.visualContext = new VisualContextChannel(definition ? studentPrompt(definition) : SYSTEM_PROMPT, event => send(lesson, event));
-    lesson.bridge = new AvatarToolBridge({ onEvent: event => publish(lesson, { kind: "server_event", event }), onKnowledge: state => publish(lesson, { kind: "knowledge", state }), send: event => send(lesson, event) }, definition, definition ? lessonService.assessor(definition) : undefined);
+    lesson.visualContext = new VisualContextChannel(definition ? knowledgeInstructions(studentPrompt(definition), new StudentKnowledge(definition).snapshot()) : SYSTEM_PROMPT, event => send(lesson, event));
+    lesson.drawing = new DrawingRelay(request => {
+      // Requests are transient, never replay commands from SSE history.
+      for (const listener of lesson.listeners) listener.write(`data: ${JSON.stringify(request)}\n\n`);
+    });
+    lesson.bridge = new AvatarToolBridge({ onStudentKnowledge: state => {
+      publish(lesson, { kind: "student_knowledge", studentKnowledge: state });
+      void lesson.visualContext.setBase(knowledgeInstructions(definition ? studentPrompt(definition) : SYSTEM_PROMPT, state)).catch(() => {});
+    }, onDrawingTool: lesson.drawing.execute, onEvent: event => {
+      if (lesson.audioRenderer === "tagged-tts" && lesson.definition) {
+        if (event.type === "response.output_audio_transcript.delta") return;
+        if (event.type === "response.output_audio_transcript.done" && typeof event.transcript === "string") event = { ...event, transcript: lesson.bridge.reviewSpeech(event.transcript).approved_text };
+      }
+      publish(lesson, { kind: "server_event", event });
+    }, onKnowledge: state => publish(lesson, { kind: "knowledge", state }), send: event => send(lesson, event) }, definition, definition ? lessonService.assessor(definition) : undefined);
     lesson.timer = setTimeout(() => void end(lesson), 120000); // unused browser reservation
     lessons.set(id, lesson);
     try {
@@ -127,7 +143,7 @@ export function createAvatarRouter(apiKey: string | undefined, lessonService: Le
     if (lesson.child) return res.json({ ok: true });
     clearTimeout(lesson.timer);
     lesson.timer = setTimeout(() => void end(lesson), 10 * 60 * 1000);
-    const child = spawn(python, [resolve("avatar/agent.py"), "--managed"], { env: { ...process.env, BOSON_API_KEY: apiKey!, TEACHBACK_ROOM: lesson.room, TEACHBACK_AVATAR_ID: lesson.avatarId, TEACHBACK_AUDIO_RENDERER: lesson.audioRenderer, TEACHBACK_SESSION_CONFIG: JSON.stringify(buildSessionConfig(settings.model, lesson.definition)), PYTHONUNBUFFERED: "1" }, stdio: "pipe" });
+    const child = spawn(python, [resolve("avatar/agent.py"), "--managed"], { env: { ...process.env, BOSON_API_KEY: apiKey!, TEACHBACK_ROOM: lesson.room, TEACHBACK_AVATAR_ID: lesson.avatarId, TEACHBACK_AUDIO_RENDERER: lesson.audioRenderer, TEACHBACK_KNOWLEDGE_GUARD: lesson.definition ? "1" : "0", TEACHBACK_SESSION_CONFIG: JSON.stringify(buildSessionConfig(settings.model, lesson.definition)), PYTHONUNBUFFERED: "1" }, stdio: "pipe" });
     lesson.child = child;
     // Never forward process environment, stderr or credentials into browser logs.
     child.stderr.on("data", () => {});
@@ -136,8 +152,16 @@ export function createAvatarRouter(apiKey: string | undefined, lessonService: Le
       try { message = JSON.parse(line); } catch { return; }
       if (message.kind === "avatar_session" && typeof message.id === "string") lesson.avatarSessionId = message.id;
       else if (lesson.ending) return;
+      else if (message.kind === "speech_review" && typeof message.request_id === "string" && typeof message.text === "string") {
+        const review = lesson.bridge.reviewSpeech(message.text);
+        if (!review.allowed) publish(lesson, { kind: "server_event", event: { type: "client.knowledge_guard", reason: review.reason, approved_text: review.approved_text } });
+        if (lesson.child?.stdin.writable) lesson.child.stdin.write(JSON.stringify({ kind: "speech_review_result", request_id: message.request_id, approved_text: review.approved_text }) + "\n");
+      }
       else if (message.kind === "server_event" && message.event && typeof message.event === "object") {
         lesson.visualContext.handle(message.event as { type: string });
+        if ((message.event as { type: string }).type === "input_audio_buffer.speech_started") {
+          lesson.drawing.cancel(); publish(lesson, { kind: "drawing_cancel" });
+        }
         lesson.bridge.handle(message.event as { type: string });
       }
       else if (message.kind === "ready") { lesson.ready = true; publish(lesson, message); }
@@ -148,6 +172,13 @@ export function createAvatarRouter(apiKey: string | undefined, lessonService: Le
     child.on("close", () => { if (lesson.ending) lessons.delete(lesson.id); });
     child.on("exit", () => { clearTimeout(lesson.timer); if (!lesson.ending) error(lesson, "The talking-avatar session ended. Start a new lesson to reconnect."); else lessons.delete(lesson.id); });
     return res.json({ ok: true });
+  });
+  router.post("/lessons/:id/drawing-result", (req, res) => {
+    const lesson = lessons.get(req.params.id);
+    if (!lesson?.ready || lesson.ending) return res.status(409).json({ error: "Lesson unavailable." });
+    const { requestId, result } = req.body ?? {};
+    if (typeof requestId !== "string" || !result || typeof result.summary !== "string" || result.summary.length > 2000 || (result.error !== undefined && typeof result.error !== "string")) return res.status(400).json({ error: "Invalid drawing result." });
+    return res.json({ accepted: lesson.drawing.finish(requestId, result) });
   });
   router.post("/lessons/:id/visual-context", async (req, res) => {
     const lesson = lessons.get(req.params.id);

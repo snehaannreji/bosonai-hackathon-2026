@@ -109,3 +109,20 @@ describe("integrated Boson talking-avatar client", () => {
     await client.close();
   });
 });
+
+it("applies avatar drawing requests in the browser and acknowledges them without reconnecting", async () => {
+  const onDrawingTool = vi.fn(() => ({ summary: "Applied", revision: 2 }));
+  const client = new LiveAvatarClient({ ...callbacks(), onDrawingTool }, "avatar", vi.fn()); await open(client);
+  const request = { kind: "drawing_request", requestId: "req1", name: "draw_shapes", args: { shapes: [] } };
+  Events.instances[0].emit(request); Events.instances[0].emit(request);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(onDrawingTool).toHaveBeenCalledExactlyOnceWith("draw_shapes", { shapes: [] });
+  expect(fetchMock).toHaveBeenCalledWith("/api/avatar/lessons/lesson-1/drawing-result", expect.objectContaining({ body: JSON.stringify({ requestId: "req1", result: { summary: "Applied", revision: 2 } }) }));
+  expect(state.rooms).toHaveLength(1); await client.close();
+});
+it("drops unstarted browser drawing work on interruption", async () => {
+  const onDrawingTool = vi.fn(); const client = new LiveAvatarClient({ ...callbacks(), onDrawingTool }, "avatar", vi.fn()); await open(client);
+  Events.instances[0].emit({ kind: "drawing_request", requestId: "req1", name: "draw_shapes", args: {} });
+  Events.instances[0].emit({ kind: "drawing_cancel" }); await vi.advanceTimersByTimeAsync(0);
+  expect(onDrawingTool).not.toHaveBeenCalled(); await client.close();
+});

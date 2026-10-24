@@ -11,7 +11,7 @@ export const LABELS: Record<Concept, string> = {
 };
 export function initialKnowledge(): KnowledgeState {
   return {
-    gradient_direction: { status: "misunderstood", evidence: "Maya thinks the gradient points toward the minimum." },
+    gradient_direction: { status: "unknown", evidence: "No explanation yet." },
     learning_rate: { status: "unknown", evidence: "No explanation yet." },
     convergence: { status: "unknown", evidence: "No explanation yet." },
   };

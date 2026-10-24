@@ -87,6 +87,39 @@ async def send_microphone_frame(ws, frame):
     await ws.send(json.dumps({"type": "input_audio_buffer.append", "audio": audio}))
 
 
+def avatar_session_failure(response):
+    """Classify provider failures without exposing upstream bodies or tokens."""
+    try:
+        body = response.json()
+        error = body.get("error", {}) if isinstance(body, dict) else {}
+        code = error.get("code", "request_failed") if isinstance(error, dict) else "request_failed"
+        error_type = error.get("type", "") if isinstance(error, dict) else ""
+    except ValueError:
+        code, error_type = "request_failed", ""
+    if code == "capacity_exhausted":
+        retry_after = getattr(response, "headers", {}).get("Retry-After", "")
+        delay = f" Retry after {retry_after} seconds." if str(retry_after).isdigit() and len(str(retry_after)) <= 5 else " Wait a moment before reconnecting."
+        return "Boson avatar capacity is currently full (429: capacity_exhausted)." + delay + " You can start with Boson voice + photo while waiting. This response is a capacity refusal, not a LiveKit settings error."
+    if error_type == "insufficient_quota" or code == "insufficient_quota":
+        return "Boson refused the avatar session because the account has insufficient quota. Check Boson account credit; retrying alone will not resolve it."
+    if response.status_code in (429, 503):
+        return f"Boson temporarily refused the avatar session ({response.status_code}). Wait before retrying, or start with Boson voice + photo."
+    return f"Boson avatar session failed ({response.status_code}). Check Boson account access and the LiveKit Cloud configuration."
+
+
+async def review_student_speech(text, request_id, pending, reporter, timeout=3):
+    """Validate complete text with Node before synchronized tagged TTS starts."""
+    future = asyncio.get_running_loop().create_future()
+    pending[request_id] = future
+    reporter("speech_review", request_id=request_id, text=text)
+    try:
+        return await asyncio.wait_for(future, timeout=timeout)
+    except asyncio.TimeoutError:
+        return "Could you walk me through that with a simple example?"
+    finally:
+        pending.pop(request_id, None)
+
+
 def livekit_token(identity, *, publish, subscribe, publish_on_behalf=None):
     token = (api.AccessToken(os.environ["LIVEKIT_API_KEY"], os.environ["LIVEKIT_API_SECRET"])
              .with_identity(identity)
@@ -128,9 +161,7 @@ async def main():
                 "participant_identity": AVATAR_IDENTITY, "publisher_identity": AGENT_IDENTITY,
             }, "max_duration_seconds": MAX_DURATION_SECONDS}, timeout=60)
         if not response.ok:
-            try: code = response.json().get("error", {}).get("code", "request_failed")
-            except ValueError: code = "request_failed"
-            report("error", message=f"Boson avatar session failed ({response.status_code}: {code}). Check account access, credit, and LiveKit Cloud settings.")
+            report("error", message=avatar_session_failure(response))
             return
         session_id = response.json()["id"]
         report("avatar_session", id=session_id)
@@ -154,6 +185,7 @@ async def main():
             response_transcripts = []
             response_has_fact_log = False
             tagged_items = set()
+            speech_reviews = {}
 
             @output.on("playback_finished")
             def played(event):
@@ -201,6 +233,10 @@ async def main():
                     try:
                         command = json.loads(line)
                         if command.get("kind") == "send": await ws.send(json.dumps(command["event"]))
+                        elif command.get("kind") == "speech_review_result":
+                            pending_review = speech_reviews.get(command.get("request_id"))
+                            if pending_review and not pending_review.done():
+                                pending_review.set_result(command.get("approved_text", ""))
                     except (ValueError, KeyError): pass
                 stop.set()
 
@@ -208,6 +244,11 @@ async def main():
                 nonlocal current_item, speaking
                 if not isinstance(text, str) or not text.strip():
                     return
+                if MANAGED and os.environ.get("TEACHBACK_KNOWLEDGE_GUARD") == "1":
+                    request_id = f"speech-{item_id}-{generation}"
+                    text = await review_student_speech(text, request_id, speech_reviews, report)
+                    if generation != tts_generation or stop.is_set() or not text:
+                        return
                 emotion = choose_speech_emotion() if apply_emotion else None
                 tags = {
                     "anger": "<|emotion:anger|><|style:shouting|>",

@@ -8,6 +8,7 @@ export class VisualContextChannel {
   private active: Pending | null = null;
   private queued: Pending | null = null;
   private newest = -1;
+  private latest: VisualContext | null = null;
   private closed = false;
   constructor(private base: string, private send: (event: ClientEvent) => void | Promise<void>, private timeoutMs = 5000) {}
   update(input: VisualContext): Promise<ContextReceipt> {
@@ -15,6 +16,7 @@ export class VisualContextChannel {
     if (this.closed) return Promise.reject(new Error("The conversation has ended."));
     if (context.revision < this.newest) return Promise.resolve({ revision: context.revision, accepted: false, ackMs: 0 });
     this.newest = context.revision;
+    this.latest = context;
     return new Promise((resolve, reject) => {
       const next = { context, instructions: visualInstructions(this.base, context), resolve, reject, started: performance.now() };
       if (this.active) {
@@ -23,8 +25,16 @@ export class VisualContextChannel {
       } else this.transmit(next);
     });
   }
+  setBase(base: string) {
+    this.base = base;
+    // Share the same serial acknowledged channel as vision so neither kind of
+    // update can overwrite the other's instructions with an older base.
+    if (this.latest) return this.update(this.latest);
+    return this.update({ revision: 0, status: "pending" });
+  }
   private transmit(next: Pending) {
     if (this.closed) return;
+    next.instructions = visualInstructions(this.base, next.context);
     this.active = next;
     next.timer = setTimeout(() => this.fail(next, new Error("Boson did not acknowledge the visual context update.")), this.timeoutMs);
     try {

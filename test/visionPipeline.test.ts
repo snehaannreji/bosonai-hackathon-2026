@@ -85,3 +85,17 @@ describe("event-driven latest-frame-wins whiteboard", () => {
     await tick(5000); expect(f.capture).toHaveBeenCalledOnce();
   });
 });
+
+it("shares known AI geometry silently without Gemini calls, then observes teacher edits", async () => {
+  const f = fixture(); f.pipeline.change("ai"); await tick(1000);
+  expect(f.analyze).not.toHaveBeenCalled(); expect(f.capture).not.toHaveBeenCalled();
+  expect(f.contexts.at(-1)).toMatchObject({ status: "observed", revision: 1 });
+  f.pipeline.change("complete"); await tick(120);
+  expect(f.analyze).toHaveBeenCalledOnce();
+  expect(f.pipeline.snapshot().deliveredRevision).toBe(2); f.pipeline.stop();
+});
+it("keeps pending teacher analysis when AI modifies the same board", async () => {
+  const f = fixture(); f.pipeline.change("complete"); f.pipeline.change("ai"); await tick(120);
+  expect(f.analyze).toHaveBeenCalledOnce(); expect(f.capture.mock.calls[0][0]).toBe(2);
+  f.pipeline.stop();
+});

@@ -42,3 +42,16 @@ describe("silent visual-context delivery", () => {
     expect(value.observation?.revision).toBe(9);
   });
 });
+
+it("merges earned-knowledge updates with the latest queued board without overwriting either", async () => {
+  const events: ClientEvent[] = []; const channel = new VisualContextChannel("initial student", e => { events.push(e); });
+  const first = channel.update({ revision: 1, status: "cleared" });
+  const knowledge = channel.setBase("student with teacher fact");
+  const latest = channel.update({ revision: 2, status: "pending" });
+  expect((await knowledge).accepted).toBe(false);
+  channel.handle({ type: "session.updated", session: events[0].session }); await first;
+  expect((events[1].session as { instructions: string }).instructions).toContain("student with teacher fact");
+  expect((events[1].session as { instructions: string }).instructions).toContain('"revision":2');
+  channel.handle({ type: "session.updated", session: events[1].session }); await latest;
+  expect(events.every(e => e.type === "session.update")).toBe(true); channel.close();
+});

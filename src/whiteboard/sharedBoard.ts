@@ -65,8 +65,8 @@ export class SharedBoardClient {
   }
 }
 
-export async function createWhiteboardPairing(lessonId: string, ownerToken: string): Promise<PairingDetails> {
-  const response = await fetch("/api/whiteboard/pair", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lessonId, ownerToken }) });
+export async function createWhiteboardPairing(lessonId: string, ownerToken: string, initialMarks: Mark[] = []): Promise<PairingDetails> {
+  const response = await fetch("/api/whiteboard/pair", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lessonId, ownerToken, initialMarks }) });
   const body = await response.json(); if (!response.ok) throw new Error(body.error ?? "Could not create tablet pairing.");
   return body;
 }

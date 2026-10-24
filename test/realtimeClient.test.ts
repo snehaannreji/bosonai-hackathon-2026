@@ -100,3 +100,93 @@ describe("reused Boson client with Alex's learning tool", () => {
     client.disconnect();
   });
 });
+
+it("executes drawing calls once on the active voice session and returns structured IDs", async () => {
+  const onDrawingTool = vi.fn(() => ({ summary: "Applied", revision: 1, objects: [{ id: "arrow", owner: "ai" }] }));
+  const client = new RealtimeClient({ tokenProvider: async () => credentials, onDrawingTool }); const ws = await ready(client);
+  const call = { type: "response.function_call_arguments.done", call_id: "drawing", name: "draw_shapes", arguments: "{}" };
+  ws.receive({ type: "response.created" }); ws.receive(call); ws.receive(call);
+  ws.receive({ type: "response.done", response: { status: "completed", output: [{ ...call, type: "function_call" }] } });
+  await vi.waitFor(() => expect(ws.sent.filter(e => e.type === "response.create")).toHaveLength(1));
+  expect(onDrawingTool).toHaveBeenCalledOnce();
+  const output = ws.sent.find(e => (e.item as { type?: string } | undefined)?.type === "function_call_output")!.item as { output: string };
+  expect(JSON.parse(output.output)).toMatchObject({ revision: 1, objects: [{ id: "arrow" }] });
+  expect(client.connectionState).toBe("open"); expect(FakeSocket.instances).toHaveLength(1); client.disconnect();
+});
+it("rejects drawing calls discovered in cancelled responses after barge-in", async () => {
+  const onDrawingTool = vi.fn(); const client = new RealtimeClient({ tokenProvider: async () => credentials, onDrawingTool }); const ws = await ready(client);
+  ws.receive({ type: "response.created" }); ws.receive({ type: "input_audio_buffer.speech_started" });
+  ws.receive({ type: "response.done", response: { status: "cancelled", output: [{ type: "function_call", call_id: "late", name: "draw_shapes", arguments: "{}" }] } });
+  await vi.waitFor(() => expect(ws.sent.some(e => (e.item as { call_id?: string } | undefined)?.call_id === "late")).toBe(true));
+  expect(onDrawingTool).not.toHaveBeenCalled(); expect(ws.sent.filter(e => e.type === "response.create")).toHaveLength(0); client.disconnect();
+});
+
+it("grounds live student responses and drawings in earned state without exposing evaluator answers", async () => {
+  const { mockLesson } = await import("../src/state/lesson");
+  const onDrawingTool = vi.fn(() => ({ summary: "Drawn" }));
+  const secret = "PRIVATE reference answer: sigmoid derivative and chain rule";
+  const client = new RealtimeClient({ tokenProvider: async () => credentials, lesson: { ...mockLesson("Neural networks"), mock: false }, onDrawingTool,
+    assessEvidence: async () => ({ matchedCriteria: [], matchedConcepts: [], topicFactTaught: true, misconception: true, groundTruth: secret, reason: secret }) });
+  const ws = await ready(client);
+  const tool = async (call_id: string, name: string, args: object) => {
+    ws.receive({ type: "response.created" });
+    ws.receive({ type: "response.function_call_arguments.done", call_id, name, arguments: JSON.stringify(args) });
+    ws.receive({ type: "response.done", response: { status: "completed" } });
+    await vi.waitFor(() => expect(ws.sent.some(e => (e.item as { call_id?: string } | undefined)?.call_id === call_id)).toBe(true));
+    return JSON.parse((ws.sent.find(e => (e.item as { call_id?: string } | undefined)?.call_id === call_id)!.item as { output: string }).output);
+  };
+  const args = { shapes: [{ id: "a", tool: "circle", points: [{ x: .1, y: .2 }, { x: .2, y: .3 }] }], intent: "Draw a neural network", evidence_ids: [] };
+  expect(await tool("before", "draw_shapes", args)).toMatchObject({ error: "untaught_drawing" });
+  expect(onDrawingTool).not.toHaveBeenCalled();
+  client.sendUserText("A neural network has connected nodes. We draw nodes as circles joined by lines.");
+  const source = ws.sent.filter(e => (e.item as { role?: string } | undefined)?.role === "user").at(-1)!.item as { content: { text: string }[] };
+  const transcript = source.content[0].text;
+  // The typed event uses a generated human source ID; get it from callback-free
+  // evidence matching by inspecting the returned safe prepare_response state.
+  ws.receive({ type: "response.created" });
+  ws.receive({ type: "response.function_call_arguments.done", call_id: "teach", name: "update_understanding", arguments: JSON.stringify({ concept: "topic_fact", evidence: transcript }) });
+  ws.receive({ type: "response.done", response: { status: "completed" } });
+  await vi.waitFor(() => expect(ws.sent.some(e => (e.item as { call_id?: string } | undefined)?.call_id === "teach")).toBe(true));
+  const prepared = await tool("prepare", "prepare_response", { text: "Could we try a simple example?", evidence_ids: [] });
+  const factId = prepared.knowledge.facts[0].id;
+  expect(prepared.knowledge.facts[0].text).toBe(transcript);
+  const after = await tool("after", "draw_shapes", { ...args, evidence_ids: [factId] });
+  expect(after.summary).toBe("Drawn");
+  expect(onDrawingTool).toHaveBeenCalledWith("draw_shapes", { shapes: args.shapes });
+  expect(JSON.stringify(ws.sent)).not.toContain(secret);
+  client.disconnect();
+});
+
+it("checks complete tagged speech before synthesis and shows only the approved transcript", async () => {
+  const { mockLesson } = await import("../src/state/lesson");
+  const onServerEvent = vi.fn();
+  const fetch = vi.fn(async () => ({ ok: true, body: { getReader: () => ({ read: async () => ({ done: true }), cancel: async () => {} }) } }));
+  vi.stubGlobal("fetch", fetch);
+  const client = new RealtimeClient({ tokenProvider: async () => credentials, lesson: mockLesson("Neural networks"), audioRenderer: "tagged-tts", onServerEvent });
+  const ws = await ready(client);
+  ws.receive({ type: "response.created" });
+  ws.receive({ type: "response.output_audio_transcript.delta", item_id: "expert", delta: "The sigmoid derivative is" });
+  ws.receive({ type: "response.output_audio_transcript.done", item_id: "expert", transcript: "The sigmoid derivative is sigmoid(x) * (1 - sigmoid(x))." });
+  await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+  const body = JSON.parse((fetch.mock.calls[0] as unknown as [string, { body: string }])[1].body);
+  expect(body.text).not.toContain("sigmoid"); expect(body.text).toContain("not sure");
+  expect(onServerEvent.mock.calls.some(([e]) => e.type === "response.output_audio_transcript.delta")).toBe(false);
+  expect(onServerEvent).toHaveBeenCalledWith(expect.objectContaining({ type: "response.output_audio_transcript.done", transcript: body.text }));
+  client.disconnect();
+});
+
+it("draws immediately after transcribed teaching without waiting for evaluator approval", async () => {
+  const { mockLesson } = await import("../src/state/lesson");
+  const onDrawingTool = vi.fn(() => ({ summary: "Drawn" })), onStudentKnowledgeChange = vi.fn();
+  const assessEvidence = vi.fn(async () => { throw new Error("No evaluator available"); });
+  const client = new RealtimeClient({ tokenProvider: async () => credentials, lesson: { ...mockLesson("Neural networks"), mock: false }, onDrawingTool, onStudentKnowledgeChange, assessEvidence });
+  const ws = await ready(client);
+  ws.receive({ type: "conversation.item.input_audio_transcription.completed", item_id: "spoken", transcript: "When drawing a neural network, circles are nodes and lines connect the nodes." });
+  expect(onStudentKnowledgeChange).toHaveBeenLastCalledWith(expect.objectContaining({ drawing: expect.objectContaining({ ready: true }), facts: [expect.objectContaining({ sourceId: "spoken" })] }));
+  const shapes = [{ id: "node", tool: "circle", points: [{ x: .1, y: .1 }, { x: .2, y: .2 }] }];
+  ws.receive({ type: "response.created" });
+  ws.receive({ type: "response.function_call_arguments.done", call_id: "draw-explained", name: "draw_shapes", arguments: JSON.stringify({ intent: "I'll sketch an annotated neural network layout", shapes }) });
+  ws.receive({ type: "response.done", response: { status: "completed" } });
+  await vi.waitFor(() => expect(onDrawingTool).toHaveBeenCalledWith("draw_shapes", { shapes }));
+  expect(assessEvidence).not.toHaveBeenCalled(); client.disconnect();
+});
