@@ -31,7 +31,7 @@ async function runStructured(apiKey: string, instructions: string, input: string
       try { const parsed = JSON.parse(String(raw)); if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(); finish(undefined, parsed); }
       catch { finish(new Error("Boson returned an invalid structured response. Try again.")); }
     };
-    ws.addEventListener("open", () => ws.send(JSON.stringify({ type: "session.update", session: { model: settings.model, instructions, output_modalities: ["text"], tools: [{ type: "function", ...tool }], tool_choice: "auto" } })));
+    ws.addEventListener("open", () => ws.send(JSON.stringify({ type: "session.update", session: { model: settings.model, instructions, output_modalities: ["text"], tools: [{ type: "function", ...tool }], tool_choice: "required" } })));
     ws.addEventListener("message", event => {
       if (settled) return;
       let data: Record<string, unknown>;
@@ -46,7 +46,11 @@ async function runStructured(apiKey: string, instructions: string, input: string
         const output = (data.response as { output?: { type?: string; name?: string; arguments?: string }[] } | undefined)?.output ?? [];
         const call = output.find(item => item.type === "function_call" && item.name === tool.name);
         if (call) result(call.arguments);
-        else if (!settled) finish(new Error("Boson did not return a lesson assessment. Try again."));
+        else if (!settled) {
+          const status = (data.response as { status?: unknown } | undefined)?.status;
+          const detail = typeof status === "string" ? " (status: " + status + ")" : "";
+          finish(new Error("Boson completed the structured request without calling " + tool.name + detail + ". Check model tool-calling access and try again."));
+        }
       }
       if (data.type === "error") finish(new Error("Boson could not prepare this lesson. Check access and retry."));
     });

@@ -12,10 +12,12 @@ import { getCharacter, type CharacterId } from "../src/state/characters";
 import { catalogCache } from "../src/realtime/catalogCache";
 import { AccessToken } from "livekit-server-sdk";
 import { AvatarToolBridge } from "../src/realtime/avatarToolBridge";
-import { buildSessionConfig } from "../src/realtime/sessionConfig";
+import { buildSessionConfig, studentPrompt, SYSTEM_PROMPT } from "../src/realtime/sessionConfig";
 import { readRealtimeSettings } from "../src/realtime/runtimeConfig";
 import { userTextItem, responseCreate, type ClientEvent } from "../src/realtime/events";
 import { DEFAULT_LEARNER_SETTINGS, type LearnerSettings } from "../src/state/learnerSettings";
+import { VisualContextChannel } from "../src/whiteboard/contextChannel";
+import { parseVisualContext, type VisualContext } from "../src/whiteboard/observations";
 
 type StreamMessage = { kind: string; [key: string]: unknown };
 interface Lesson {
@@ -23,6 +25,7 @@ interface Lesson {
   definition?: LessonDefinition; avatarSessionId?: string; listeners: Set<Response>; history: StreamMessage[];
   learnerSettings: LearnerSettings; sourceMaterial: string;
   bridge: AvatarToolBridge; ready: boolean; ending: boolean; timer: ReturnType<typeof setTimeout>; kevinLearningStarted: boolean;
+  visualContext: VisualContextChannel;
 }
 export function livekitMissing(env: Record<string, string | undefined>): string[] {
   return ["LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"].filter(name => !env[name]?.trim());
@@ -50,6 +53,7 @@ export function createAvatarRouter(apiKey: string | undefined, lessonService: Le
   const end = async (lesson: Lesson) => {
     if (lesson.ending) return;
     lesson.ending = true; clearTimeout(lesson.timer);
+    lesson.visualContext.close();
     lesson.child?.kill("SIGINT");
     const force = setTimeout(() => lesson.child?.kill("SIGKILL"), lesson.avatarSessionId ? 10000 : 75000); force.unref();
     // Backup release also covers a worker crash. Releasing an ended session is safe.
@@ -226,6 +230,7 @@ export function createAvatarRouter(apiKey: string | undefined, lessonService: Le
     };
     const sourceMaterial = typeof req.body?.sourceMaterial === "string" ? req.body.sourceMaterial.slice(0, 20000) : "";
     const lesson = { id, room, avatarId, characterId, definition, learnerSettings, sourceMaterial, child: null, listeners: new Set(), history: [], ready: false, ending: false, kevinLearningStarted: false } as unknown as Lesson;
+    lesson.visualContext = new VisualContextChannel(definition ? studentPrompt(definition, characterId, learnerSettings, sourceMaterial) : SYSTEM_PROMPT, event => send(lesson, event));
     lesson.bridge = new AvatarToolBridge({
       onEvent: event => publish(lesson, { kind: "server_event", event }),
       onKnowledge: state => publish(lesson, { kind: "knowledge", state }),
@@ -269,7 +274,10 @@ export function createAvatarRouter(apiKey: string | undefined, lessonService: Le
       try { message = JSON.parse(line); } catch { return; }
       if (message.kind === "avatar_session" && typeof message.id === "string") lesson.avatarSessionId = message.id;
       else if (lesson.ending) return;
-      else if (message.kind === "server_event" && message.event && typeof message.event === "object") lesson.bridge.handle(message.event as { type: string });
+      else if (message.kind === "server_event" && message.event && typeof message.event === "object") {
+        lesson.visualContext.handle(message.event as { type: string });
+        lesson.bridge.handle(message.event as { type: string });
+      }
       else if (message.kind === "ready") { lesson.ready = true; publish(lesson, message); }
       else if (message.kind === "error") error(lesson, typeof message.message === "string" ? message.message : "Avatar agent failed.");
       else if (message.kind === "activity") publish(lesson, message);
@@ -287,6 +295,15 @@ export function createAvatarRouter(apiKey: string | undefined, lessonService: Le
     lesson.bridge.observeText(`typed-${randomUUID()}`, text);
     send(lesson, userTextItem(text)); send(lesson, responseCreate());
     return res.json({ ok: true });
+  });
+  router.post("/lessons/:id/visual-context", async (req, res) => {
+    const lesson = lessons.get(req.params.id);
+    if (!lesson?.ready || lesson.ending) return res.status(409).json({ error: "Wait for the talking avatar to connect." });
+    let context: VisualContext;
+    try { context = parseVisualContext(req.body?.context); }
+    catch { return res.status(400).json({ error: "Invalid whiteboard observation." }); }
+    try { return res.json(await lesson.visualContext.update(context)); }
+    catch (error) { return res.status(502).json({ error: error instanceof Error ? error.message : "Visual context delivery failed." }); }
   });
   router.post("/lessons/:id/settings", (req, res) => {
     const lesson = lessons.get(req.params.id);

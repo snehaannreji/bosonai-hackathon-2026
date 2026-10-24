@@ -1,4 +1,4 @@
-import type { RealtimeCallbacks } from "./RealtimeClient";
+﻿import type { RealtimeCallbacks } from "./RealtimeClient";
 import { CONCEPTS } from "../state/knowledge";
 import { createKnowledgeTracker, type KnowledgeContext } from "../state/createKnowledgeTracker";
 import { dispatch } from "../tools/registry";
@@ -20,7 +20,7 @@ export class MockClient {
     this.tracker.reset(); this.explanations = []; this.kevinLearningStarted = false;
     this.cb.onConnectionState?.("open");
     const character = getCharacter(this.cb.characterId);
-    this.reply(this.cb.characterId === "kevin" ? "Banana!" : this.cb.lesson ? `Hey, I’m ${character.name}. ${this.cb.lesson.openingQuestion}` : `Hey, I'm ${character.name}. I thought the gradient points toward the minimum. Is that how it works?`);
+    this.reply( this.cb.lesson ? `Hey, I’m ${character.name}. ${this.cb.lesson.openingQuestion}` : `Hey, I'm ${character.name}. I thought the gradient points toward the minimum. Is that how it works?`);
   }
   disconnect() { this.active = false; this.cb.onConnectionState?.("closed"); this.cb.onActivity?.("idle"); }
   async close() { this.disconnect(); }
@@ -34,7 +34,7 @@ export class MockClient {
       if (isKevinConcentrationCommand(text)) {
         this.kevinLearningStarted = true;
         this.reply("Okay! I am concentrating now. Teach me the first idea!");
-      } else this.reply(Math.random() < 0.5 ? "Ha ha ha!" : "Banana!");
+      } else this.reply("I hear you! " + text.trim().slice(0, 160) + " That is a fun one to think about.");
       return;
     }
     this.tracker.observeHuman(item, text);
@@ -88,3 +88,4 @@ export class MockClient {
     this.cb.onActivity?.("idle");
   }
 }
+

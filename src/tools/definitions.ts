@@ -13,11 +13,11 @@ export const TOOL_DEFINITIONS = [{
   },
 }] as const;
 
-export function lessonToolDefinitions(concepts: { id: string; label: string }[]) {
+export function lessonToolDefinitions(_concepts: { id: string; label: string }[]) {
   return [{ type: "function", name: "update_understanding",
-    description: "Silently call after the human explains a lesson concept, before you speak. Quote their exact words. An independent evidence check decides the learning state; do not choose a status yourself. Reassurance alone is not evidence. If rejected, ask a natural follow-up rather than looping. Never narrate this action or say 'let me update my understanding'; after the result, respond naturally without reading tool details aloud.",
+    description: "Call after every human statement that teaches or asserts a topic fact, even if it is only one short sentence, and after an answer to your direct question. Quote the human's exact words. Always set concept to topic_fact; the app independently checks which lesson concepts the explanation supports. Do not choose a status yourself. Reassurance alone is not evidence. If rejected, ask a natural follow-up rather than looping. Never narrate this action or read tool details aloud.",
     parameters: { type: "object", properties: {
-      concept: { type: "string", enum: concepts.map(c => c.id), description: concepts.map(c => `${c.id}: ${c.label}`).join("; ") },
+      concept: { type: "string", enum: ["topic_fact"], description: "Always use topic_fact; generated lesson concepts are assessed independently." },
       evidence: { type: "string", description: "A verbatim quote from the human's explanation." },
     }, required: ["concept", "evidence"], additionalProperties: false },
   }];

@@ -33,6 +33,18 @@ const instructorFactTokens = (value: string) => value
   .replace(/[\d,]+/gu, match => match.replace(/,/gu, ""))
   .match(/[\p{L}\p{N}]+/gu) ?? [];
 
+/** Match a quoted source excerpt despite formatting-only differences such as
+ * punctuation, line wraps, and repeated whitespace. Token order must remain exact. */
+export function containsVerbatimExcerpt(excerpt: string, source: string): boolean {
+  const quote = instructorFactTokens(excerpt);
+  const notes = instructorFactTokens(source);
+  if (quote.length < 3 || quote.length > notes.length) return false;
+  for (let start = 0; start <= notes.length - quote.length; start++) {
+    if (quote.every((token, offset) => token === notes[start + offset])) return true;
+  }
+  return false;
+}
+
 export function explanationCoversSourceText(sourceText: string, explanation: string): boolean {
   const ignored = new Set(["a", "an", "and", "are", "as", "at", "by", "for", "from", "in", "is", "it", "of", "on", "or", "the", "to", "with"]);
   const expected = [...new Set(instructorFactTokens(sourceText).filter(token => !ignored.has(token)))];

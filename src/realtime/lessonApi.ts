@@ -1,7 +1,7 @@
 import { mockLesson, normalizeInstructorNotes, normalizeStudentName, normalizeTopic, type EvidenceAssessment, type EvidenceAssessor, type InstructorGuideFact, type LessonDefinition } from "../state/lesson";
 import { normalizeStudent, type StudentSettings } from "../state/student";
 export interface PreparedLesson { lesson: LessonDefinition; instructorGuide: InstructorGuideFact[] }
-export function prepareLesson(topic: string, mock: boolean, signal?: AbortSignal, student?: StudentSettings): Promise<LessonDefinition>;
+export function prepareLesson(topic: string, mock: boolean, signal?: AbortSignal, student?: StudentSettings, studentNameOverride?: string): Promise<LessonDefinition>;
 export function prepareLesson(topic: string, mock: boolean, familiarity?: number, studentName?: string, instructorNotes?: string, signal?: AbortSignal, student?: StudentSettings): Promise<PreparedLesson>;
 export async function prepareLesson(
   topic: string,
@@ -11,6 +11,7 @@ export async function prepareLesson(
   instructorNotes = "",
   legacySignal?: AbortSignal,
   selectedStudent?: StudentSettings,
+  modernStudentName?: string,
 ): Promise<LessonDefinition | PreparedLesson> {
   const normalized = normalizeTopic(topic);
   const modernCall = typeof familiarityOrSignal !== "number";
@@ -19,10 +20,10 @@ export async function prepareLesson(
   const student = normalizeStudent(modernCall && typeof nameOrStudent !== "string" ? nameOrStudent : selectedStudent);
   const rawName = typeof nameOrStudent === "string" ? nameOrStudent : "Alex";
   if (!Number.isInteger(familiarity) || familiarity < 0 || familiarity > 100) throw new Error("Student familiarity must be between 0 and 100.");
-  const normalizedName = normalizeStudentName(rawName);
+  const normalizedName = normalizeStudentName(modernCall && modernStudentName ? modernStudentName : rawName);
   const notes = normalizeInstructorNotes(instructorNotes);
   const lessonStudent = student;
-  const lessonName = modernCall ? undefined : normalizedName;
+  const lessonName = modernCall ? (modernStudentName ? normalizedName : undefined) : normalizedName;
   if (mock && modernCall) {
     const lesson = mockLesson(normalized, modernCall ? student : familiarity, normalizedName);
     lesson.student = lessonStudent;

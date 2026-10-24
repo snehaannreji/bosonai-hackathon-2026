@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import { bosonStructured } from "./bosonStructured";
-import { CRITERIA_IDS, coveredInstructorGuideFactIds, explanationCoversSourceText, mockLesson, normalizeInstructorNotes, normalizeStudentName, normalizeTopic, type EvidenceAssessor, type InstructorGuideFact, type LessonDefinition } from "../src/state/lesson";
+import { CRITERIA_IDS, containsVerbatimExcerpt, coveredInstructorGuideFactIds, explanationCoversSourceText, mockLesson, normalizeInstructorNotes, normalizeStudentName, normalizeTopic, type EvidenceAssessor, type InstructorGuideFact, type LessonDefinition } from "../src/state/lesson";
 import { LEARNING_LEVELS, STUDENTS, normalizeStudent, studentName, type StudentSettings } from "../src/state/student";
 
 const short = (value: unknown, max: number) => typeof value === "string" ? value.trim().slice(0, max) : "";
@@ -39,8 +39,11 @@ export function createLessonService(apiKey: string | undefined, authorizeWhitebo
         independentFactTaught: { type: "boolean" },
         topicFactTaught: { type: "boolean" },
       }, required: ["matchedCriteria", "matchedConcepts", "misconception", "reason", "factAccuracy", "groundTruth", "taughtGuideFactIds", "independentFactTaught", "topicFactTaught"], additionalProperties: false } });
-    if (!Array.isArray(result.matchedCriteria) || !result.matchedCriteria.every(item => typeof item === "string") || !Array.isArray(result.matchedConcepts) || !result.matchedConcepts.every((item: { conceptId?: unknown; matchedCriteria?: unknown }) => typeof item?.conceptId === "string" && lesson.concepts.some(candidate => candidate.id === item.conceptId) && Array.isArray(item.matchedCriteria) && item.matchedCriteria.every(id => (CRITERIA_IDS as readonly string[]).includes(String(id)))) || typeof result.misconception !== "boolean" || typeof result.reason !== "string" || !["accurate", "incorrect", "uncertain"].includes(String(result.factAccuracy)) || typeof result.groundTruth !== "string" || !Array.isArray(result.taughtGuideFactIds) || !result.taughtGuideFactIds.every(id => typeof id === "string" && guideFactIds.includes(id)) || typeof result.independentFactTaught !== "boolean" || typeof result.topicFactTaught !== "boolean") throw new Error("Invalid assessment.");
-    const taughtGuideFactIds = coveredInstructorGuideFactIds(instructorGuide, quote, result.taughtGuideFactIds as string[]);
+    const validGuideFactIds = Array.isArray(result.taughtGuideFactIds) && result.taughtGuideFactIds.every(id =>
+      typeof id === "string" && (guideFactIds.length ? guideFactIds.includes(id) : id === "none"),
+    );
+    if (!Array.isArray(result.matchedCriteria) || !result.matchedCriteria.every(item => typeof item === "string") || !Array.isArray(result.matchedConcepts) || !result.matchedConcepts.every((item: { conceptId?: unknown; matchedCriteria?: unknown }) => typeof item?.conceptId === "string" && lesson.concepts.some(candidate => candidate.id === item.conceptId) && Array.isArray(item.matchedCriteria) && item.matchedCriteria.every(id => (CRITERIA_IDS as readonly string[]).includes(String(id)))) || typeof result.misconception !== "boolean" || typeof result.reason !== "string" || !["accurate", "incorrect", "uncertain"].includes(String(result.factAccuracy)) || typeof result.groundTruth !== "string" || !validGuideFactIds || typeof result.independentFactTaught !== "boolean" || typeof result.topicFactTaught !== "boolean") throw new Error("Invalid assessment.");
+    const taughtGuideFactIds = coveredInstructorGuideFactIds(instructorGuide, quote, (result.taughtGuideFactIds as string[]).filter(id => guideFactIds.includes(id)));
     return { matchedCriteria: result.matchedCriteria as string[], matchedConcepts: result.matchedConcepts as { conceptId: string; matchedCriteria: string[] }[], misconception: result.misconception, reason: result.reason.slice(0, 280), factAccuracy: result.factAccuracy as "accurate" | "incorrect" | "uncertain", groundTruth: result.groundTruth.slice(0, 500), taughtGuideFactIds, independentFactTaught: result.independentFactTaught, topicFactTaught: result.topicFactTaught };
   };
 
@@ -92,14 +95,15 @@ export function createLessonService(apiKey: string | undefined, authorizeWhitebo
               }, required: ["text", "sourceText"], additionalProperties: false } },
             }, required: ["facts"], additionalProperties: false } });
           if (!Array.isArray(guideResult.facts) || guideResult.facts.length < 1 || guideResult.facts.length > 12) throw new Error("Could not extract a usable teaching guide from these notes. Check that they contain topic facts, or remove them and try again.");
-          instructorGuide = guideResult.facts.map((raw, index) => {
-            if (!raw || typeof raw !== "object") throw new Error("The instructor teaching guide returned invalid facts. Try again.");
+          instructorGuide = guideResult.facts.flatMap((raw, index) => {
+            if (!raw || typeof raw !== "object") return [];
             const fact = raw as Record<string, unknown>;
             const text = short(fact.text, 500);
             const sourceText = short(fact.sourceText, 1000);
-            if (!text || !sourceText || !explanationCoversSourceText(sourceText, instructorNotes)) throw new Error("The instructor teaching guide returned invalid facts or a source excerpt not found in the notes. Try again.");
-            return { id: `guide-${index + 1}`, text, sourceText, conceptId: null };
+            if (!text || !sourceText || !containsVerbatimExcerpt(sourceText, instructorNotes)) return [];
+            return [{ id: `guide-${index + 1}`, text, sourceText, conceptId: null }];
           });
+          if (!instructorGuide.length) console.warn("Instructor reference notes were accepted, but Boson's returned excerpts could not be verified; continuing without the guide.");
         }
       }
       for (const [id, value] of lessons) if (value.expires <= Date.now()) lessons.delete(id);
@@ -119,7 +123,11 @@ export function createLessonService(apiKey: string | undefined, authorizeWhitebo
     const quote = req.body?.quote;
     if (!concept || !Array.isArray(turns) || !turns.length || turns.length > 8 || !turns.every(t => t && typeof t.id === "string" && t.id.length < 200 && typeof t.text === "string" && t.text.length <= 2000) || typeof quote !== "string" || quote.length > 2000) return res.status(400).json({ error: "Invalid explanation evidence." });
     try { return res.json({ assessment: await assessor(lesson)({ concept, turns, quote }) }); }
-    catch { return res.status(502).json({ error: "Could not check this explanation. Keep teaching and retry next turn." }); }
+    catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown assessment failure.";
+      console.error("Lesson evidence assessment failed:", message);
+      return res.status(502).json({ error: `Could not check this explanation: ${message}` });
+    }
   });
   return { router, get, assessor };
 }

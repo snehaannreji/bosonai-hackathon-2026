@@ -78,7 +78,6 @@ async def main():
     feedback_directness = max(0, min(100, int(os.environ.get("TEACHBACK_FEEDBACK_DIRECTNESS", "35"))))
     character_id = os.environ.get("TEACHBACK_CHARACTER_ID", "alex")
     kevin_learning_started = False
-    kevin_play_reply_count = 0
     def task(coro):
         created = asyncio.create_task(coro); tasks.add(created)
         created.add_done_callback(tasks.discard)
@@ -258,7 +257,7 @@ async def main():
                 stop.set()
 
             async def receive():
-                nonlocal current_item, speaking, truncate_item, assistant_text, synthesis_task, feedback_directness, kevin_learning_started, kevin_play_reply_count
+                nonlocal current_item, speaking, truncate_item, assistant_text, synthesis_task, feedback_directness, kevin_learning_started
                 async for message in ws:
                     event = json.loads(message)
                     kind = event["type"]
@@ -270,10 +269,7 @@ async def main():
                         set_activity("thinking")
                     elif kind == "response.output_text.delta" and isinstance(event.get("delta"), str):
                         assistant_text += event["delta"]
-                        # Kevin's play-mode text is replaced when the full reply is
-                        # ready. Don't show raw model tokens that won't be spoken.
-                        if not (use_tts and character_id == "kevin" and not kevin_learning_started):
-                            report("server_event", event=event)
+                        report("server_event", event=event)
                     elif kind == "conversation.item.input_audio_transcription.completed":
                         transcript = str(event.get("transcript", ""))
                         if character_id == "kevin" and re.search(r"\bkevin\b[\s,.:;!?-]*(?:you|u)\s+need\s+to\s+concentrate\b", transcript, flags=re.IGNORECASE):
@@ -282,12 +278,7 @@ async def main():
                     elif kind == "response.output_text.done" and isinstance(event.get("text"), str):
                         assistant_text = event["text"]
                         if use_tts and character_id == "kevin":
-                            if not kevin_learning_started:
-                                playful_replies = ["Banana!", "Ha ha ha!", "Bello! Hee hee!", "Banana! Hee hee!", "Bello! Bello!", "Ha ha ha!"]
-                                assistant_text = playful_replies[kevin_play_reply_count % len(playful_replies)]
-                                kevin_play_reply_count += 1
-                            else:
-                                assistant_text = re.sub(r"\bbananas?\b", "Banana!", assistant_text, flags=re.IGNORECASE)
+                            assistant_text = re.sub(r"\bbananas?\b", "Banana!", assistant_text, flags=re.IGNORECASE)
                             event["text"] = assistant_text
                         report("server_event", event=event)
                     elif kind == "response.output_audio.delta":

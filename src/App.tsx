@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { RealtimeClient, type Activity, type ConnectionState, type LogEntry, type RealtimeCallbacks } from "./realtime/RealtimeClient";
 import { MockClient } from "./realtime/MockClient";
 import { emptyTranscript, transcriptReducer, type TranscriptState } from "./state/transcriptStore";
@@ -19,6 +19,8 @@ import type { RemoteVideoTrack } from "livekit-client";
 import { getCharacter, type CharacterId } from "./state/characters";
 import { loadAvatarPhoto } from "./state/avatarPhoto";
 import { DEFAULT_LEARNER_SETTINGS, type LearnerSettings } from "./state/learnerSettings";
+import { WhiteboardPanel } from "./ui/WhiteboardPanel";
+import type { VisualContext } from "./whiteboard/observations";
 
 async function fetchToken(): Promise<RealtimeCredentials> {
   const res = await fetch("/api/token");
@@ -88,6 +90,7 @@ export default function App() {
   const [videoTrack, setVideoTrack] = useState<RemoteVideoTrack | null>(null);
   const [avatarError, setAvatarError] = useState<string | null>(null);
   const [avatarReload, setAvatarReload] = useState(0);
+  const [whiteboardOpen, setWhiteboardOpen] = useState(false);
   const [clipId, setClipId] = useState<string | null>(null);
   const [clipStream, setClipStream] = useState<AvatarStream | null>(null);
   const [clipStatus, setClipStatus] = useState("");
@@ -97,6 +100,11 @@ export default function App() {
   const micBusy = useRef(false);
   const connected = connection === "open";
   const busy = preparing || connected || connection === "connecting" || connection === "closing";
+  const deliverWhiteboardObservation = useCallback((context: VisualContext) => {
+    const target = client.current;
+    if (!connected || !target || !("updateWhiteboard" in target)) return Promise.reject(new Error("Start the live conversation before sharing the board."));
+    return target.updateWhiteboard(context);
+  }, [connected]);
 
   const makeCharacterClip = async (characterId: CharacterId, replyText: string, version: number, feedbackDirectness: number) => {
     setClipId(null); setClipStream(null); setClipStatus(`Preparing ${getCharacter(characterId).name}’s reply…`); setError(null);
@@ -195,7 +203,7 @@ export default function App() {
     try {
       if (client.current) await client.current.close();
       if (version !== startupVersion.current) return;
-      const prepared = await prepareLesson(topic, mode === "mock", abort.signal);
+      const prepared = await prepareLesson(topic, mode === "mock", abort.signal, undefined, character.name);
       if (version !== startupVersion.current) return;
       setLesson(prepared); setKnowledge(initialTopicKnowledge(prepared)); setTranscript(emptyTranscript); setLog([]);
       const callbacks: RealtimeCallbacks = {
@@ -230,7 +238,7 @@ export default function App() {
     if (!value.trim() || !connected || (isCharacterClipMode(mode) && Boolean(clipStatus))) return;
     void client.current?.sendUserText(value.trim()); setText("");
   };
-  const end = () => { ++startupVersion.current; startupAbort.current?.abort(); clipAbort.current?.abort(); setPreparing(false); setClipId(null); setClipStream(null); setClipStatus(""); client.current?.disconnect(); setConnection("closed"); setMicActive(false); setMicLevel(0); setVideoTrack(null); };
+  const end = () => { ++startupVersion.current; startupAbort.current?.abort(); clipAbort.current?.abort(); setWhiteboardOpen(false); setPreparing(false); setClipId(null); setClipStream(null); setClipStatus(""); client.current?.disconnect(); setConnection("closed"); setMicActive(false); setMicLevel(0); setVideoTrack(null); };
   const startingHunch = lesson?.concepts.find(c => c.initialBelief)?.initialBelief;
 
   return <main className="app">
@@ -244,6 +252,7 @@ export default function App() {
           <div className="session-controls"><select aria-label="Conversation mode" value={mode} onChange={e => { setMode(e.target.value as Mode); setError(null); setTranscript(emptyTranscript); setKnowledge({}); setLesson(null); setClipId(null); setClipStream(null); setClipStatus(""); }} disabled={busy}><option value="avatar">Boson talking avatar</option><option value="voice">Boson voice + photo</option>{hasBundledTalkingPortrait(characterId) && <option value="character-clips">{character.name} talking clips</option>}<option value="mock">Local mock (text only)</option></select>
           {!busy ? <button className="primary" disabled={!topic.trim() || (mode === "avatar" && (!avatarStatus?.configured || !presets.length)) || (isCharacterClipMode(mode) && !configured)} onClick={() => void start()}>Start lesson <span>↗</span></button> : <button onClick={end}>{preparing ? "Cancel lesson setup" : connection === "connecting" ? "Cancel connection" : "End lesson"}</button>}</div>
           {mode !== "mock" && <MicButton active={micActive} level={micLevel} disabled={!connected || micPending || (isCharacterClipMode(mode) && Boolean(clipStatus))} onToggle={() => void toggleMic()} />}
+          {experienceMode === "study" && <button type="button" className="whiteboard-launch" disabled={!lesson} onClick={() => setWhiteboardOpen(true)}>✎ Open whiteboard</button>}
           {configured === false && mode === "voice" && <p className="notice">Add BOSON_API_KEY to .env and restart the server for live voice, or select Local mock to explore.</p>}
           {mode === "avatar" && <div className="avatar-setup">
             <label htmlFor="avatar-preset">Student avatar</label><select id="avatar-preset" value={avatarId} onChange={e => setAvatarId(e.target.value)} disabled={busy || !presets.length}>{presets.length ? presets.map(p => <option value={p.id} key={p.id}>{p.name}</option>) : <option>Loading Boson presets…</option>}</select>
@@ -270,6 +279,12 @@ export default function App() {
         <a className="avatar-link" href="https://docs.boson.ai/models/higgs-avatar/realtime-sessions" target="_blank" rel="noreferrer">Boson live avatar setup guide ↗</a>
       </aside>
     </div>
+    {experienceMode === "study" && lesson && <div className="whiteboard-overlay" hidden={!whiteboardOpen} onMouseDown={event => { if (event.target === event.currentTarget) setWhiteboardOpen(false); }}>
+      <aside className="whiteboard-workspace" role="dialog" aria-modal="true" aria-label="Classroom whiteboard">
+        <div className="whiteboard-workspace-head"><div><span>TEACHING TOOL</span><strong>Whiteboard</strong></div><div>{mode !== "mock" && <MicButton active={micActive} level={micLevel} disabled={!connected || micPending} onToggle={() => void toggleMic()} />}<button className="close-workspace" type="button" onClick={() => setWhiteboardOpen(false)}>Close ×</button></div></div>
+        <WhiteboardPanel sessionKey={lesson.id} ownerToken={lesson.whiteboardOwnerToken ?? ""} active={connected} deliverObservation={connected && mode !== "mock" ? deliverWhiteboardObservation : undefined} />
+      </aside>
+    </div>}
     <footer>YOU TEACH. {character.name.toUpperCase()} LEARNS. YOU UNDERSTAND.<span>Powered by Boson Higgs Realtime</span></footer>
     <DebugDrawer entries={log} />
   </main>;

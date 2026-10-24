@@ -12,7 +12,7 @@ import {
 } from "./events";
 import { buildSessionConfig } from "./sessionConfig";
 import { formatBabySpeech } from "../state/babySpeech";
-import { formatKevinSpeech, isKevinConcentrationCommand, kevinPlayModeReply } from "../state/kevinSpeech";
+import { formatKevinSpeech, isKevinConcentrationCommand } from "../state/kevinSpeech";
 import { RingPlayer } from "../audio/playback";
 import { MicCapture } from "../audio/capture";
 import { dispatch as dispatchTool } from "../tools/registry";
@@ -80,8 +80,9 @@ export class RealtimeClient {
   private generation = 0;
   private sessionReady = false;
   private assistantReplyText = "";
+  private assistantTextFinalized = false;
+  private assistantTextItemId: string | null = null;
   private kevinLearningStarted = false;
-  private kevinPlayReplyCount = 0;
   private visualContext: VisualContextChannel | null = null;
 
   /**
@@ -307,21 +308,19 @@ export class RealtimeClient {
     if (this.cb.characterId === "baby-yoda" && this.cb.outputMode === "text" && evt.type === SERVER.outputTextDone && typeof evt.text === "string") {
       evt = { ...evt, text: formatBabySpeech(evt.text) };
     }
-    if (this.cb.characterId === "kevin" && this.cb.outputMode === "text" && evt.type === SERVER.outputTextDone && typeof evt.text === "string") {
-      evt = { ...evt, text: this.kevinLearningStarted ? formatKevinSpeech(evt.text) : kevinPlayModeReply(this.kevinPlayReplyCount++) };
-    }
+    if (this.cb.characterId === "kevin" && this.cb.outputMode === "text" && evt.type === SERVER.outputTextDone && typeof evt.text === "string") evt = { ...evt, text: formatKevinSpeech(evt.text) };
 
     // Log first, act second. Everything the server says shows up in the drawer,
     // including the events no branch below handles.
     this.log("recv", evt.type, evt);
     this.visualContext?.handle(evt);
-    const hideKevinPlayDelta = this.cb.characterId === "kevin"
-      && this.cb.outputMode === "text"
-      && !this.kevinLearningStarted
-      && evt.type === SERVER.outputTextDelta;
-    if (!hideKevinPlayDelta) this.cb.onServerEvent?.(evt);
-    if (!hideKevinPlayDelta && evt.type === SERVER.outputTextDelta && typeof evt.delta === "string") this.assistantReplyText += evt.delta;
-    if (evt.type === SERVER.outputTextDone && typeof evt.text === "string") this.assistantReplyText = evt.text;
+    this.cb.onServerEvent?.(evt);
+    if (evt.type === SERVER.outputTextDelta && typeof evt.delta === "string") this.assistantReplyText += evt.delta;
+    if (evt.type === SERVER.outputTextDone && typeof evt.text === "string") {
+      this.assistantReplyText = evt.text;
+      this.assistantTextFinalized = true;
+      this.assistantTextItemId = typeof evt.item_id === "string" ? evt.item_id : null;
+    }
     if (evt.type === SERVER.transcriptionCompleted && typeof evt.item_id === "string" && typeof evt.transcript === "string") {
       const wasLearning = this.kevinLearningStarted;
       this.activateKevinLearning(evt.transcript);
@@ -341,6 +340,8 @@ export class RealtimeClient {
         this.player.reset();
         this.toolBatch = null;
         this.assistantReplyText = "";
+        this.assistantTextFinalized = false;
+        this.assistantTextItemId = null;
         this.setActivity("thinking");
         break;
 
@@ -473,7 +474,8 @@ export class RealtimeClient {
     // function_call_arguments.done can appear AGAIN in response.done's output
     // list. We still walk it — occasionally a call shows up only here — but
     // handledCallIds means nothing runs twice.
-    const output = (evt.response as { output?: unknown[] } | undefined)?.output ?? [];
+    const response = evt.response as { output?: { id?: string; type?: string; role?: string; content?: { type?: string; text?: string }[] }[] } | undefined;
+    const output = response?.output ?? [];
     for (const raw of output) {
       const item = raw as { type?: string; name?: string; call_id?: string; arguments?: string };
       if (item?.type === "function_call" && item.call_id && item.name) {
@@ -487,10 +489,19 @@ export class RealtimeClient {
       }
     }
 
-    if (this.cb.outputMode === "text" && this.assistantReplyText.trim()) {
-      const reply = this.assistantReplyText.trim();
+    if (this.cb.outputMode === "text") {
+      const assistantItem = output.find(item => item.type === "message" && item.role === "assistant");
+      const returnedText = assistantItem?.content?.filter(part => part.type === "output_text" && typeof part.text === "string").map(part => part.text).join(" ").trim() ?? "";
+      const reply = this.assistantReplyText.trim() || returnedText;
+      if (reply && (!this.assistantTextFinalized || !this.assistantTextItemId)) {
+        const itemId = assistantItem?.id ?? "assistant-" + Date.now() + "-" + (++logSeq);
+        if (!assistantItem?.id) this.cb.onServerEvent?.({ type: SERVER.outputItemAdded, item: { id: itemId, type: "message", role: "assistant" } });
+        this.cb.onServerEvent?.({ type: SERVER.outputTextDone, item_id: itemId, text: reply });
+      }
       this.assistantReplyText = "";
-      this.cb.onAssistantReply?.(reply);
+      this.assistantTextFinalized = false;
+      this.assistantTextItemId = null;
+      if (reply) this.cb.onAssistantReply?.(reply);
     }
 
     if (this.toolBatch && this.toolBatch.promises.length > 0) {

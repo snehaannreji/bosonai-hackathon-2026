@@ -1,10 +1,13 @@
 import { readFileSync } from "node:fs";
+import { createServer } from "node:http";
 import express from "express";
 import dotenv from "dotenv";
 import { resolve } from "node:path";
 import { readRealtimeSettings } from "../src/realtime/runtimeConfig";
 import { createAvatarRouter } from "./avatarSessions";
 import { createLessonService } from "./lessons";
+import { createVisionService } from "./vision";
+import { createWhiteboardSync } from "./whiteboardSync";
 
 dotenv.config();
 
@@ -44,18 +47,23 @@ function loadApiKey(): string | undefined {
 const BOSON_API_KEY = loadApiKey();
 
 const app = express();
+const httpServer = createServer(app);
 app.disable("x-powered-by");
 // Baby Yoda clip mode posts a validated local photo plus one short reply's
 // audio to the server so it can call Boson's documented video endpoint.
 app.use("/api/avatar/character-videos", express.json({ limit: "20mb" }));
+app.use("/api/vision", express.json({ limit: "1500kb" }), createVisionService());
 app.use(express.json({ limit: "128kb" }));
 app.use("/api", (_req, res, next) => { res.setHeader("Cache-Control", "no-store"); next(); });
-const lessonService = createLessonService(BOSON_API_KEY);
+const whiteboardSync = createWhiteboardSync();
+const lessonService = createLessonService(BOSON_API_KEY, whiteboardSync.authorizeLesson);
 app.use("/api/lessons", lessonService.router);
+app.use("/api/whiteboard", whiteboardSync.router);
+whiteboardSync.attach(httpServer);
 const avatars = createAvatarRouter(BOSON_API_KEY, lessonService);
 app.use("/api/avatar", avatars.router);
-process.once("SIGTERM", () => { void avatars.close().finally(() => process.exit(0)); });
-process.once("SIGINT", () => { void avatars.close().finally(() => process.exit(0)); });
+process.once("SIGTERM", () => { void Promise.all([avatars.close(), whiteboardSync.close()]).finally(() => process.exit(0)); });
+process.once("SIGINT", () => { void Promise.all([avatars.close(), whiteboardSync.close()]).finally(() => process.exit(0)); });
 app.get("/api/config", (_req, res) => res.json({ voiceConfigured: Boolean(BOSON_API_KEY), ...realtimeSettings }));
 
 /**
@@ -118,7 +126,7 @@ if (process.env.NODE_ENV === "production") {
   app.use(express.static(resolve("dist")));
 }
 
-app.listen(PORT, "127.0.0.1", () => {
+httpServer.listen(PORT, "0.0.0.0", () => {
   console.log(`Token server listening on http://localhost:${PORT}`);
   if (!BOSON_API_KEY) {
     console.warn(

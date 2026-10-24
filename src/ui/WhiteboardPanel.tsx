@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type PointerEvent } from "react";
+﻿import { useEffect, useRef, useState, type PointerEvent } from "react";
 import { BOARD_HEIGHT, BOARD_WIDTH, boardPoint, experimentBoard, markAt, moveMark, renderBoard, type DrawTool, type Mark, type Point } from "../whiteboard/board";
 import { captureWhiteboard, type BoardCapture } from "../whiteboard/capture";
 import { boardSnapshotter } from "../whiteboard/snapshot";
@@ -44,6 +44,7 @@ export function WhiteboardPanel({ lab = false, experiment = false, diagnostics =
   const [pairingQr, setPairingQr] = useState("");
   const [tabletStatus, setTabletStatus] = useState<SharedBoardStatus>("disconnected");
   const [tabletPeers, setTabletPeers] = useState(0);
+  const [panelOpen, setPanelOpen] = useState(true);
   const paint = (change?: "intermediate" | "complete" | "clear") => {
     const ctx = canvas.current?.getContext("2d");
     if (!ctx) return;
@@ -84,7 +85,7 @@ export function WhiteboardPanel({ lab = false, experiment = false, diagnostics =
     const timer = setInterval(() => setClock(Date.now()), 1000); return () => clearInterval(timer);
   }, []);
   useEffect(() => {
-    if (!enabled || !vision?.configured || !canvas.current || (!deliverObservation && !lab)) return;
+    if (!enabled || !vision?.configured || !canvas.current) return;
     const instance = new WhiteboardVisionPipeline({
       initialRevision: revisionClock.current,
       capture: boardSnapshotter(canvas.current),
@@ -202,10 +203,11 @@ export function WhiteboardPanel({ lab = false, experiment = false, diagnostics =
     }
   };
   const running = enabled && vision?.configured && (Boolean(deliverObservation) || lab);
-  const ms = (value: number | null | undefined) => value == null ? "—" : `${Math.round(value)} ms`;
+  const ms = (value: number | null | undefined) => value == null ? "â€”" : `${Math.round(value)} ms`;
   return <section className="whiteboard-card" aria-label="Teaching whiteboard">
-    <div className="whiteboard-heading"><div><p className="eyebrow">DRAW WHILE YOU TEACH</p><h2>Whiteboard</h2></div><span role="status" className={`board-status ${sharing === "error" || debug?.status === "error" ? "board-error" : ""}`}>{sharing === "error" ? "Vision setup error" : running ? debug?.status === "current" ? deliverObservation ? "Visual context current" : "Analysis current · no voice session" : `Vision: ${debug?.status ?? "starting"}` : "Vision off"}</span></div>
-    <p className="whiteboard-help">Draw while you explain. {running ? `${deliverObservation ? "Your student receives" : "Vision analyzes"} meaningful changes automatically.` : vision?.reason ?? "Start a live lesson to share drawing changes."}</p>
+    <button type="button" className="whiteboard-heading" aria-expanded={panelOpen} aria-controls="whiteboard-content" onClick={() => setPanelOpen(open => !open)}><span className="whiteboard-title"><span className="eyebrow">DRAW WHILE YOU TEACH</span><strong>Whiteboard</strong></span><span className="whiteboard-heading-end"><span role="status" className={`board-status ${sharing === "error" || debug?.status === "error" ? "board-error" : ""}`}>{sharing === "error" ? "Vision setup error" : running ? debug?.status === "current" ? deliverObservation ? "Visual context current" : "Analysis current" : `Vision: ${debug?.status ?? "starting"}` : "Vision off"}</span><span aria-hidden="true" className="whiteboard-chevron">{panelOpen ? "−" : "+"}</span></span></button>
+    <div id="whiteboard-content" className="whiteboard-content" hidden={!panelOpen}>
+    <p className="whiteboard-help">Draw while you explain. {running ? `${deliverObservation ? "Your student receives" : "Vision analyzes"} meaningful changes automatically.` : vision?.reason ?? "Start a live voice/avatar lesson first. Vision will then update it automatically."}</p>
     <div className="board-toolbar" role="toolbar" aria-label="Drawing tools">
       {tools.map(value => <button type="button" key={value} aria-pressed={tool === value} onClick={() => setTool(value)}>{value}</button>)}
       <label>Color <input aria-label="Drawing color" type="color" value={color} onChange={e => setColor(e.target.value)} /></label>
@@ -214,18 +216,18 @@ export function WhiteboardPanel({ lab = false, experiment = false, diagnostics =
       <button type="button" disabled={!future.current.length} onClick={redo}>Redo</button>
       <button type="button" onClick={() => replace([])}>Clear whiteboard</button>
     </div>
-    {tool === "text" && <label className="board-text">Text or equation (Unicode math supported)<textarea value={text} maxLength={500} onChange={e => setText(e.target.value)} placeholder="e.g. L(θ) = θ² or ∇L = 2θ — then click to place" /></label>}
+    {tool === "text" && <label className="board-text">Text or equation (Unicode math supported)<textarea value={text} maxLength={500} onChange={e => setText(e.target.value)} placeholder="e.g. L(Î¸) = Î¸Â² or âˆ‡L = 2Î¸ â€” then click to place" /></label>}
     <div className={`board-canvases ${diagnostics || lab ? "with-preview" : ""}`}>
       <canvas ref={canvas} width={BOARD_WIDTH} height={BOARD_HEIGHT} aria-label="Draw your explanation here" onPointerDown={down} onPointerMove={move} onPointerUp={e => finish(e)} onPointerCancel={e => finish(e, true)} onLostPointerCapture={e => finish(e, true)} />
-      {(diagnostics || lab) && <div className={`board-preview ${capturing ? "capture-active" : ""}`}><video ref={preview} muted autoPlay playsInline aria-label="Local whiteboard capture preview" /><span>{capturing ? `Local video preview · ${previewFrames} decoded frames · Video track stays local` : "Local capture preview · Not connected"}</span></div>}
+      {(diagnostics || lab) && <div className={`board-preview ${capturing ? "capture-active" : ""}`}><video ref={preview} muted autoPlay playsInline aria-label="Local whiteboard capture preview" /><span>{capturing ? `Local video preview Â· ${previewFrames} decoded frames Â· Video track stays local` : "Local capture preview Â· Not connected"}</span></div>}
     </div>
-    <div className="board-actions"><button className="connect-tablet" type="button" disabled={!sessionKey || !ownerToken || pairingBusy || !active} onClick={() => void connectTablet()}>{pairingBusy ? "Creating link…" : tabletStatus === "connected" && tabletPeers > 1 ? "Tablet connected" : "Connect tablet"}</button><button type="button" disabled={sharing === "checking" || Boolean(running)} onClick={() => void startSharing()}>Start sharing</button><button type="button" disabled={!running && sharing === "idle"} onClick={() => { request.current?.abort(); setEnabled(false); setSharing("idle"); setError(null); stopCapture(); }}>Stop sharing</button>{(diagnostics || lab) && <button type="button" onClick={() => capturing ? stopCapture() : void startCapture()}>{capturing ? "Stop local capture" : "Test local capture"}</button>}</div>
-    {pairingOpen && pairing && <div className="pairing-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setPairingOpen(false); }}><section className="pairing-dialog" role="dialog" aria-modal="true" aria-labelledby="pairing-title"><button className="pairing-close" onClick={() => setPairingOpen(false)} aria-label="Close tablet pairing">×</button><p className="eyebrow">SHARED DRAWING</p><h3 id="pairing-title">Connect a tablet</h3><p>Scan with your tablet camera. It joins this lesson’s whiteboard only—voice stays on this computer.</p>{pairingQr && <img src={pairingQr} alt="QR code for this whiteboard session" />}<span className={`tablet-status ${tabletStatus}`}>{tabletStatus === "connected" ? `${Math.max(0, tabletPeers - 1)} tablet${tabletPeers === 2 ? "" : "s"} connected` : tabletStatus}</span><a href={pairing.url} target="_blank" rel="noreferrer">Open tablet view on this device</a><button onClick={() => void navigator.clipboard.writeText(pairing.url)}>Copy pairing link</button><small>Link expires at {new Date(pairing.expiresAt).toLocaleTimeString()}. Ending the lesson revokes it immediately.</small></section></div>}
-    {(diagnostics || lab) && <><p className="whiteboard-help">Event-driven JPEG analysis · 120 ms stroke-end debounce · latest frame wins · separate Vertex vision fallback.</p>
-    <details className="vision-debug"><summary>Vision diagnostics · revision {revisionClock.current}</summary><dl>
-      <dt>Model</dt><dd>{vision?.model ?? "Not configured"}</dd><dt>Analyzed / delivered revision</dt><dd>{debug?.analyzedRevision ?? "—"} / {debug?.deliveredRevision ?? "—"}</dd>
+    <div className="board-actions"><button className="connect-tablet" type="button" disabled={!sessionKey || !ownerToken || pairingBusy || !active} onClick={() => void connectTablet()}>{pairingBusy ? "Creating linkâ€¦" : tabletStatus === "connected" && tabletPeers > 1 ? "Tablet connected" : "Connect tablet"}</button><button type="button" disabled={sharing === "checking" || Boolean(running)} onClick={() => void startSharing()}>Start sharing</button><button type="button" disabled={!running && sharing === "idle"} onClick={() => { request.current?.abort(); setEnabled(false); setSharing("idle"); setError(null); stopCapture(); }}>Stop sharing</button>{(diagnostics || lab) && <button type="button" onClick={() => capturing ? stopCapture() : void startCapture()}>{capturing ? "Stop local capture" : "Test local capture"}</button>}</div>
+    {pairingOpen && pairing && <div className="pairing-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setPairingOpen(false); }}><section className="pairing-dialog" role="dialog" aria-modal="true" aria-labelledby="pairing-title"><button className="pairing-close" onClick={() => setPairingOpen(false)} aria-label="Close tablet pairing">Ã—</button><p className="eyebrow">SHARED DRAWING</p><h3 id="pairing-title">Connect a tablet</h3><p>Scan with your tablet camera. It joins this lessonâ€™s whiteboard onlyâ€”voice stays on this computer.</p>{pairingQr && <img src={pairingQr} alt="QR code for this whiteboard session" />}<span className={`tablet-status ${tabletStatus}`}>{tabletStatus === "connected" ? `${Math.max(0, tabletPeers - 1)} tablet${tabletPeers === 2 ? "" : "s"} connected` : tabletStatus}</span><a href={pairing.url} target="_blank" rel="noreferrer">Open tablet view on this device</a><button onClick={() => void navigator.clipboard.writeText(pairing.url)}>Copy pairing link</button><small>Link expires at {new Date(pairing.expiresAt).toLocaleTimeString()}. Ending the lesson revokes it immediately.</small></section></div>}
+    {(diagnostics || lab) && <><p className="whiteboard-help">Event-driven JPEG analysis Â· 120 ms stroke-end debounce Â· latest frame wins Â· separate Vertex vision fallback.</p>
+    <details className="vision-debug"><summary>Vision diagnostics Â· revision {revisionClock.current}</summary><dl>
+      <dt>Model</dt><dd>{vision?.model ?? "Not configured"}</dd><dt>Analyzed / delivered revision</dt><dd>{debug?.analyzedRevision ?? "â€”"} / {debug?.deliveredRevision ?? "â€”"}</dd>
       <dt>Status / pending revisions</dt><dd>{debug?.status ?? "off"} / {debug?.queued ? "one replaceable revision" : "none"}</dd><dt>Latest description</dt><dd>{debug?.description || "No current visual observation"}</dd>
-      <dt>Age of last success</dt><dd>{debug?.lastSuccessAt ? `${Math.max(0, (clock - debug.lastSuccessAt) / 1000).toFixed(1)} s` : "—"}</dd><dt>Capture / vision provider / round trip</dt><dd>{ms(debug?.captureMs)} / {ms(debug?.analysisMs)} / {ms(debug?.requestMs)}</dd>
+      <dt>Age of last success</dt><dd>{debug?.lastSuccessAt ? `${Math.max(0, (clock - debug.lastSuccessAt) / 1000).toFixed(1)} s` : "â€”"}</dd><dt>Capture / vision provider / round trip</dt><dd>{ms(debug?.captureMs)} / {ms(debug?.analysisMs)} / {ms(debug?.requestMs)}</dd>
       <dt>Context acknowledgement / total</dt><dd>{ms(debug?.contextMs)} / {ms(debug?.totalMs)}</dd><dt>Discarded stale results</dt><dd>{debug?.discarded ?? 0}</dd></dl>
       <button type="button" onClick={() => { if (canvas.current) void boardSnapshotter(canvas.current)(revisionClock.current, performance.now()).then(frame => setLocalCaptureMs(frame.captureMs)).catch(e => setError(String(e))); }}>Measure local JPEG export</button>
       <p>Local export benchmark: {ms(localCaptureMs)}. This diagnostic does not send an image or observation.</p>
@@ -233,5 +235,8 @@ export function WhiteboardPanel({ lab = false, experiment = false, diagnostics =
     {count >= 300 && <p className="notice">This prototype holds 300 marks. Undo or clear the board to continue.</p>}
     {error && <p className="error" role="alert">{error}</p>}
     {(lab || (experiment && diagnostics)) && <div className="board-experiment"><h3>Current-frame experiment</h3><p>These controls alter actual canvas pixels for model verification.</p><div className="board-actions">{["Blank board", "Red circle", "Add blue arrow", "Erase circle"].map((label, index) => <button type="button" key={label} onClick={() => replace(experimentBoard(index as 0 | 1 | 2 | 3))}>{label}</button>)}</div></div>}
+    </div>
   </section>;
 }
+
+

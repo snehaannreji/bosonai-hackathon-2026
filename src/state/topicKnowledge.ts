@@ -98,14 +98,15 @@ export class TopicKnowledgeTracker {
     if (!assessment) { assessment = this.assess({ concept, lessonConcepts: this.lesson.concepts, turns, quote: args.evidence }); this.cache.set(cacheKey, assessment); }
     let result;
     try { result = await assessment; }
-    catch {
+    catch (error) {
       this.cache.delete(cacheKey);
       const stateKey = topicFactUpdate ? "taught_facts" : concept.id;
       const current = this.state[stateKey] ?? { status: "unknown" as const, evidence: "No facts taught yet." };
       const fact = makeLearnedFact(`turn:${sourceId}`, sourceTurn.text, "unverified", undefined, { origin: "conversation", sourceId, conceptId: topicFactUpdate ? null : concept.id });
       this.state = { ...this.state, [stateKey]: { ...current, evidence: sourceTurn.text, sourceId, learnedFacts: appendLearnedFacts(current.learnedFacts, [fact]) } };
       this.onChange?.(this.snapshot());
-      return reject("assessment_unavailable", "The evidence check is unavailable. Keep learning and try the update again next turn.");
+      const detail = error instanceof Error ? error.message : "unknown assessment error";
+      return reject("assessment_unavailable", `The evidence check is unavailable (${detail}). Keep learning and try again in a new lesson if the session was restarted.`);
     }
     if (revision !== this.revision) return reject("stale_evidence", "A newer explanation arrived during the check. Use the updated human transcript next turn.");
     const matchedConcepts = topicFactUpdate ? (result.matchedConcepts ?? []).filter(match =>
