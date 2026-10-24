@@ -15,7 +15,7 @@ import { userTextItem, responseCreate, type ClientEvent } from "../src/realtime/
 
 type StreamMessage = { kind: string; [key: string]: unknown };
 interface Lesson {
-  id: string; room: string; avatarId: string; child: ChildProcessWithoutNullStreams | null;
+  id: string; room: string; avatarId: string; audioRenderer: "realtime" | "tagged-tts"; child: ChildProcessWithoutNullStreams | null;
   definition?: LessonDefinition; avatarSessionId?: string; listeners: Set<Response>; history: StreamMessage[];
   bridge: AvatarToolBridge; ready: boolean; ending: boolean; timer: ReturnType<typeof setTimeout>;
 }
@@ -80,13 +80,14 @@ export function createAvatarRouter(apiKey: string | undefined, lessonService: Le
     if (lessons.size) return res.status(409).json({ error: "A talking-avatar lesson is already running. End that lesson first." });
     const avatarId = typeof req.body?.avatarId === "string" ? req.body.avatarId.trim() : "";
     if (!avatarId || avatarId.length > 256) return res.status(400).json({ error: "Choose a Boson preset avatar." });
+    const audioRenderer = req.body?.audioRenderer === "tagged-tts" ? "tagged-tts" : "realtime";
     const check = spawnSync(python, [resolve("avatar/agent.py"), "--check"], { timeout: 20000, encoding: "utf8" });
     if (check.status !== 0) return res.status(503).json({ error: "The avatar Python agent is not installed. Run npm run avatar:setup (Python 3.10+), then try again." });
     const definition = typeof req.body?.lessonId === "string" ? lessonService.get(req.body.lessonId) : undefined;
     if (req.body?.lessonId && !definition) return res.status(404).json({ error: "This lesson expired. Start a new lesson." });
     const id = randomUUID();
     const room = `teachback-${id}`;
-    const lesson = { id, room, avatarId, definition, child: null, listeners: new Set(), history: [], ready: false, ending: false } as unknown as Lesson;
+    const lesson = { id, room, avatarId, audioRenderer, definition, child: null, listeners: new Set(), history: [], ready: false, ending: false } as unknown as Lesson;
     lesson.bridge = new AvatarToolBridge({ onEvent: event => publish(lesson, { kind: "server_event", event }), onKnowledge: state => publish(lesson, { kind: "knowledge", state }), send: event => send(lesson, event) }, definition, definition ? lessonService.assessor(definition) : undefined);
     lesson.timer = setTimeout(() => void end(lesson), 120000); // unused browser reservation
     lessons.set(id, lesson);
@@ -112,7 +113,7 @@ export function createAvatarRouter(apiKey: string | undefined, lessonService: Le
     if (lesson.child) return res.json({ ok: true });
     clearTimeout(lesson.timer);
     lesson.timer = setTimeout(() => void end(lesson), 10 * 60 * 1000);
-    const child = spawn(python, [resolve("avatar/agent.py"), "--managed"], { env: { ...process.env, BOSON_API_KEY: apiKey!, TEACHBACK_ROOM: lesson.room, TEACHBACK_AVATAR_ID: lesson.avatarId, TEACHBACK_SESSION_CONFIG: JSON.stringify(buildSessionConfig(settings.model, lesson.definition)), PYTHONUNBUFFERED: "1" }, stdio: "pipe" });
+    const child = spawn(python, [resolve("avatar/agent.py"), "--managed"], { env: { ...process.env, BOSON_API_KEY: apiKey!, TEACHBACK_ROOM: lesson.room, TEACHBACK_AVATAR_ID: lesson.avatarId, TEACHBACK_AUDIO_RENDERER: lesson.audioRenderer, TEACHBACK_SESSION_CONFIG: JSON.stringify(buildSessionConfig(settings.model, lesson.definition)), PYTHONUNBUFFERED: "1" }, stdio: "pipe" });
     lesson.child = child;
     // Never forward process environment, stderr or credentials into browser logs.
     child.stderr.on("data", () => {});

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { RealtimeClient, type Activity, type ConnectionState, type LogEntry, type RealtimeCallbacks } from "./realtime/RealtimeClient";
+import { RealtimeClient, type Activity, type AudioRenderer, type ConnectionState, type LogEntry, type RealtimeCallbacks } from "./realtime/RealtimeClient";
 import { MockClient } from "./realtime/MockClient";
 import { emptyTranscript, transcriptReducer, type TranscriptState } from "./state/transcriptStore";
 import type { KnowledgeState } from "./state/knowledge";
@@ -29,6 +29,7 @@ type Mode = "avatar" | "voice" | "mock";
 
 export default function App() {
   const [mode, setMode] = useState<Mode>("avatar");
+  const [audioRenderer, setAudioRenderer] = useState<AudioRenderer>("realtime");
   const [configured, setConfigured] = useState<boolean | null>(null);
   const [connection, setConnection] = useState<ConnectionState>("idle");
   const [activity, setActivity] = useState<Activity>("idle");
@@ -101,7 +102,7 @@ export default function App() {
       if (version !== startupVersion.current) return;
       setLesson(prepared.lesson); setInstructorGuide(prepared.instructorGuide); setKnowledge(initialTopicKnowledge(prepared.lesson)); setTranscript(emptyTranscript); setLog([]);
       const callbacks: RealtimeCallbacks = {
-        tokenProvider: fetchToken, lesson: prepared.lesson, assessEvidence: lessonAssessor(prepared.lesson, prepared.instructorGuide),
+        tokenProvider: fetchToken, lesson: prepared.lesson, assessEvidence: lessonAssessor(prepared.lesson, prepared.instructorGuide), audioRenderer,
         onConnectionState: state => { if (version === startupVersion.current) setConnection(state); }, onActivity: activity => { if (version === startupVersion.current) setActivity(activity); },
         onLog: entry => { if (version === startupVersion.current) setLog(l => [...l.slice(-249), { ...entry, raw: entry.type.includes("audio.delta") || entry.type === "input_audio_buffer.append" ? "[audio chunk omitted]" : entry.raw }]); },
         onClose: info => { if (version === startupVersion.current) setError(info.code === 1000 ? null : info.message); },
@@ -109,7 +110,7 @@ export default function App() {
         onKnowledgeChange: state => { if (version === startupVersion.current) setKnowledge(state); },
         onServerEvent: evt => { if (version === startupVersion.current) setTranscript(s => transcriptReducer(s, evt, Date.now())); },
       };
-      const next = mode === "avatar" ? new LiveAvatarClient(callbacks, avatarId, track => { if (version === startupVersion.current) setVideoTrack(track); }) : mode === "mock" ? new MockClient(callbacks) : new RealtimeClient(callbacks);
+      const next = mode === "avatar" ? new LiveAvatarClient(callbacks, avatarId, track => { if (version === startupVersion.current) setVideoTrack(track); }, audioRenderer) : mode === "mock" ? new MockClient(callbacks) : new RealtimeClient(callbacks);
       client.current = next;
       setPreparing(false);
       await next.connect();
@@ -137,12 +138,14 @@ export default function App() {
     <LessonSetup topic={topic} onTopic={setTopic} studentName={studentName} onStudentName={value => { studentNameCustomized.current = true; setStudentName(value); }} notes={instructorNotes} onNotesChange={setInstructorNotes} familiarity={familiarity} onFamiliarity={setFamiliarity} mockMode={mode === "mock"} disabled={busy} preparing={preparing} onStart={() => void start()} />
     <div className="workspace">
       <section className="conversation-card" aria-label={`Conversation with ${studentName || "your student"}`}>
-        <div className="card-head"><div><span className={`dot ${connected ? "dot-open" : ""}`} /><strong>{studentName || "Your student"}</strong><span className="subtle">Your curious student</span></div><span className="pill">{mode === "avatar" ? "HIGGS AVATAR + REALTIME" : mode === "mock" ? "LOCAL MOCK · TEXT ONLY" : "HIGGS REALTIME"}</span></div>
+        <div className="card-head"><div><span className={`dot ${connected ? "dot-open" : ""}`} /><strong>{studentName || "Your student"}</strong><span className="subtle">Your curious student</span></div><span className="pill">{mode === "avatar" ? audioRenderer === "tagged-tts" ? "HIGGS AVATAR + TAGGED TTS" : "HIGGS AVATAR + REALTIME" : mode === "mock" ? "LOCAL MOCK · TEXT ONLY" : audioRenderer === "tagged-tts" ? "HIGGS TAGGED TTS" : "HIGGS REALTIME"}</span></div>
         <div className="controls">
           <div className="session-controls"><select aria-label="Conversation mode" value={mode} onChange={e => { setMode(e.target.value as Mode); setError(null); setTranscript(emptyTranscript); setKnowledge({}); setLesson(null); setInstructorGuide([]); }} disabled={busy}><option value="avatar">Boson talking avatar</option><option value="voice">Boson voice + photo</option><option value="mock">Local mock (text only)</option></select>
+          {mode !== "mock" && <select aria-label="Speech rendering mode" value={audioRenderer} onChange={e => setAudioRenderer(e.target.value as AudioRenderer)} disabled={busy}><option value="realtime">Realtime audio</option><option value="tagged-tts">Emotion-tagged Higgs TTS</option></select>}
           {!busy ? <button className="primary" disabled={!topic.trim() || (mode === "avatar" && (!avatarStatus?.configured || !presets.length))} onClick={() => void start()}>Start lesson <span>↗</span></button> : <button onClick={end}>{preparing ? "Cancel lesson setup" : connection === "connecting" ? "Cancel connection" : "End lesson"}</button>}</div>
           {mode !== "mock" && <MicButton active={micActive} level={micLevel} disabled={!connected || micPending} onToggle={() => void toggleMic()} />}
           {configured === false && mode === "voice" && <p className="notice">Add BOSON_API_KEY to .env and restart the server for live voice, or select Local mock to explore.</p>}
+          {audioRenderer === "tagged-tts" && mode !== "mock" && <p className="notice">Tagged TTS adds an emotion/style/prosody cue to each completed reply before synthesis. Audio begins as soon as TTS produces its first chunks, but there is some added delay while speech generation starts. Anger and sadness are selected most often.</p>}
           {mode === "avatar" && <div className="avatar-setup">
             <label htmlFor="avatar-preset">Student avatar</label><select id="avatar-preset" value={avatarId} onChange={e => { const id = e.target.value; setAvatarId(id); studentNameCustomized.current = false; setStudentName(presets.find(preset => preset.id === id)?.name ?? ""); }} disabled={busy || !presets.length}>{presets.length ? presets.map(p => <option value={p.id} key={p.id}>{p.name}</option>) : <option>Loading Boson presets…</option>}</select>
             <p className="avatar-upload-note">To use your own portrait, choose <strong>Boson voice + photo</strong> mode; uploaded photos are not used as live-video presets.</p>

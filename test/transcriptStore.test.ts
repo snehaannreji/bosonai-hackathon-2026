@@ -8,6 +8,7 @@ import {
   transcriptReducer,
 } from "../src/state/transcriptStore";
 import recorded from "./fixtures/three-turn.json";
+import { cleanSpokenTranscript } from "../src/realtime/speechTags";
 
 /**
  * The highest-value test in this project.
@@ -34,6 +35,13 @@ describe("transcriptReducer, against a recorded session", () => {
       "user",
       "assistant",
     ]);
+  });
+
+  describe("spoken transcript cleanup", () => {
+    it("removes leading emotion labels and inline control tags from spoken text", () => {
+      expect(cleanSpokenTranscript("[disappointed] That's a dead end.")).toBe("That's a dead end.");
+      expect(cleanSpokenTranscript("<|emotion:sadness|><|prosody:speed_slow|>I need another example.")).toBe("I need another example.");
+    });
   });
 
   it("fills in each user turn from its transcription event", () => {

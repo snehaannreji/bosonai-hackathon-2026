@@ -20,8 +20,10 @@ import { createKnowledgeTracker, type KnowledgeContext } from "../state/createKn
 import type { LessonDefinition, EvidenceAssessor } from "../state/lesson";
 import { studentToolFeedback } from "../state/topicKnowledge";
 import { buildRealtimeUrl, type RealtimeCredentials } from "./runtimeConfig";
+import { buildTaggedSpeechInput, chooseSpeechEmotion, cleanSpokenTranscript } from "./speechTags";
 
 export type ConnectionState = "idle" | "connecting" | "open" | "closing" | "closed";
+export type AudioRenderer = "realtime" | "tagged-tts";
 
 /** Coarse state for the status bar. */
 export type Activity = "idle" | "listening" | "thinking" | "speaking";
@@ -50,6 +52,7 @@ export interface RealtimeCallbacks {
   assessEvidence?: EvidenceAssessor;
   onKnowledgeChange?: (state: KnowledgeState) => void;
   onError?: (message: string) => void;
+  audioRenderer?: AudioRenderer;
 }
 
 let logSeq = 0;
@@ -68,6 +71,11 @@ export class RealtimeClient {
   private turnEpoch = 0;
   private generation = 0;
   private sessionReady = false;
+  private taggedAudioPending = false;
+  private taggedAudioStarted = false;
+  private taggedAudioPlaying = false;
+  private taggedAudioAbort: AbortController | null = null;
+  private taggedItems = new Set<string>();
 
   /**
    * The assistant item currently producing audio. This is what we truncate on
@@ -115,7 +123,10 @@ export class RealtimeClient {
     this.cb = callbacks;
     this.knowledge = createKnowledgeTracker(callbacks.onKnowledgeChange, callbacks.lesson, callbacks.assessEvidence);
     this.player = new RingPlayer((speaking) => {
-      if (!speaking) this.setActivity(this.capture?.active ? "listening" : "idle");
+      if (!speaking) {
+        this.taggedAudioPlaying = false;
+        this.setActivity(this.taggedAudioPending ? "thinking" : this.capture?.active ? "listening" : "idle");
+      }
     });
     this.capture = new MicCapture(
       (base64) => this.send(inputAudioAppend(base64)),
@@ -163,6 +174,9 @@ export class RealtimeClient {
     this.handledCallIds.clear();
     this.toolBatch = null;
     this.currentAssistantItemId = null;
+    this.taggedItems.clear();
+    this.taggedAudioPending = false;
+    this.taggedAudioStarted = false;
     this.setState("connecting");
 
     // Must happen inside the user gesture that triggered this call, or the
@@ -225,6 +239,10 @@ export class RealtimeClient {
       this.setState("closed");
     }
     this.ws = null;
+    this.taggedAudioAbort?.abort();
+    this.taggedAudioAbort = null;
+    this.taggedAudioPending = false;
+    this.taggedAudioPlaying = false;
     this.setState("closed");
     void this.player.flush();
     this.setActivity("idle");
@@ -288,6 +306,9 @@ export class RealtimeClient {
         // A new assistant turn. Zero the played-sample counter so the truncate
         // maths below measures into *this* reply, not the whole session.
         this.player.reset();
+        this.taggedAudioAbort?.abort();
+        this.taggedAudioPending = this.cb.audioRenderer === "tagged-tts";
+        this.taggedAudioStarted = false;
         this.toolBatch = null;
         this.setActivity("thinking");
         break;
@@ -298,6 +319,12 @@ export class RealtimeClient {
 
       case SERVER.responseDone:
         this.onResponseDone(evt);
+        break;
+
+      case SERVER.audioTranscriptDone:
+        if (this.cb.audioRenderer === "tagged-tts" && typeof evt.transcript === "string") {
+          void this.playTaggedTranscript(evt);
+        }
         break;
 
       case SERVER.speechStarted:
@@ -323,8 +350,10 @@ export class RealtimeClient {
         const b64 = evt.delta;
         if (typeof b64 === "string" && b64.length > 0) {
           if (typeof evt.item_id === "string") this.currentAssistantItemId = evt.item_id;
-          this.player.enqueueBase64(b64);
-          this.setActivity("speaking");
+          if (this.cb.audioRenderer !== "tagged-tts") {
+            this.player.enqueueBase64(b64);
+            this.setActivity("speaking");
+          }
         }
         break;
       }
@@ -429,9 +458,91 @@ export class RealtimeClient {
       }
     }
 
+    if (this.cb.audioRenderer === "tagged-tts" && this.taggedAudioPending && !this.taggedAudioStarted) {
+      this.taggedAudioPending = false;
+    }
     if (this.toolBatch && this.toolBatch.promises.length > 0) {
       void this.flushToolBatch();
-    } else {
+    } else if (!this.taggedAudioPending && !this.taggedAudioPlaying) {
+      this.setActivity(this.capture.active ? "listening" : "idle");
+    }
+  }
+
+  private async playTaggedTranscript(evt: ServerEvent): Promise<void> {
+    if (typeof evt.transcript !== "string") return;
+    const transcript = cleanSpokenTranscript(evt.transcript).trim();
+    const itemId = typeof evt.item_id === "string" ? evt.item_id : null;
+    if (!transcript || (itemId && this.taggedItems.has(itemId))) return;
+    if (itemId) {
+      this.taggedItems.add(itemId);
+      this.currentAssistantItemId = itemId;
+    }
+    const generation = this.generation;
+    const turn = this.turnEpoch;
+    const emotion = chooseSpeechEmotion();
+    const taggedInput = buildTaggedSpeechInput(transcript, emotion);
+    const abort = new AbortController();
+    this.taggedAudioAbort?.abort();
+    this.taggedAudioAbort = abort;
+    this.taggedAudioPending = true;
+    this.taggedAudioStarted = true;
+    this.setActivity("thinking");
+    this.info(`Tagged TTS selected ${taggedInput.slice(0, taggedInput.indexOf(transcript))}`);
+    try {
+      const response = await fetch("/api/speech", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: transcript, emotion }),
+        signal: abort.signal,
+      });
+      if (!response.ok) {
+        let message = `Tagged speech synthesis failed (${response.status}).`;
+        try {
+          const body = await response.json() as { error?: string };
+          if (typeof body.error === "string") message = body.error;
+        } catch { /* Keep the status-based error when the response is not JSON. */ }
+        throw new Error(message);
+      }
+      if (!response.body) throw new Error("Boson returned no tagged speech audio stream.");
+      const reader = response.body.getReader();
+      let remainder = new Uint8Array(0);
+      let receivedAudio = false;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (generation !== this.generation || turn !== this.turnEpoch || abort.signal.aborted) {
+            await reader.cancel();
+            return;
+          }
+          if (done) break;
+          if (!value?.length) continue;
+          const combined = new Uint8Array(remainder.length + value.length);
+          combined.set(remainder);
+          combined.set(value, remainder.length);
+          const completeLength = combined.length - (combined.length % 2);
+          if (completeLength > 0) {
+            this.player.enqueuePcm(combined.slice(0, completeLength).buffer);
+            receivedAudio = true;
+            this.taggedAudioPlaying = true;
+            this.setActivity("speaking");
+          }
+          remainder = combined.slice(completeLength);
+        }
+      } finally {
+        reader.releaseLock();
+      }
+      if (remainder.length) throw new Error("Boson returned an incomplete PCM audio sample.");
+      if (!receivedAudio) throw new Error("Boson returned an empty tagged speech audio stream.");
+      this.taggedAudioPending = false;
+      this.info(`Tagged TTS audio ready (${emotion}).`);
+    } catch (error) {
+      if (abort.signal.aborted) return;
+      this.taggedAudioPending = false;
+      this.taggedAudioPlaying = false;
+      void this.player.flush();
+      const message = error instanceof Error ? error.message : "Could not synthesize tagged speech.";
+      this.info(message);
+      this.cb.onError?.(message);
       this.setActivity(this.capture.active ? "listening" : "idle");
     }
   }
@@ -485,6 +596,9 @@ export class RealtimeClient {
    * the server's own VAD starts the new user turn.
    */
   private async handleBargeIn(): Promise<void> {
+    this.taggedAudioAbort?.abort();
+    this.taggedAudioPending = false;
+    this.taggedAudioPlaying = false;
     this.setActivity("listening");
     const playedMs = await this.player.flush();
     if (this.currentAssistantItemId && playedMs > 0) {

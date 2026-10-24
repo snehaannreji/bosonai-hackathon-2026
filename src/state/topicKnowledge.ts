@@ -177,7 +177,7 @@ export class TopicKnowledgeTracker {
     if (topicFactUpdate && (topicFactTaught || taughtNotes.length > 0 || result.independentFactTaught || matchedConcepts.some(match => match.matchedCriteria.length > 0))) {
       const updatedConceptLabels = matchedConcepts.map(match => this.lesson.concepts.find(item => item.id === match.conceptId)?.label).filter(Boolean);
       const matchedSummary = updatedConceptLabels.length ? ` Matched lesson concepts: ${updatedConceptLabels.join(", ")}.` : "";
-      return { summary: `Recorded the stated fact${taughtNotes.length ? ` and covered ${taughtNotes.length} instructor note fact${taughtNotes.length === 1 ? "" : "s"}` : ""}.${matchedSummary} Its accuracy is ${factReview === "unverified" ? "unverified" : factReview === "accurate" ? "instructor-checked" : "flagged for instructor review"}. Continue as a curious student and ask about the fact just taught.`, state: this.snapshot() };
+      return { summary: `Recorded the stated fact${taughtNotes.length ? ` and covered ${taughtNotes.length} instructor note fact${taughtNotes.length === 1 ? "" : "s"}` : ""}.${matchedSummary} Its accuracy is ${factReview === "unverified" ? "unverified" : factReview === "accurate" ? "instructor-checked" : "flagged for instructor review"}. Respond naturally to the fact and continue the conversation in your own words.`, state: this.snapshot() };
     }
     if (!status && taughtNotes.length > 0) {
       return { summary: `${taughtNotes.length} instructor note fact${taughtNotes.length === 1 ? " was" : "s were"} covered. The broader concept has not yet met its learning criteria.`, state: this.snapshot() };
@@ -243,10 +243,10 @@ export function studentToolFeedback(lesson: LessonDefinition, result: ToolResult
     return "The quoted words are not confirmed in the human's transcript. Do not claim they were recorded or learned. Stay in character and ask the human to clarify or repeat.";
   }
   if (lesson.familiarity < 25) {
-    return "You are a beginner. Treat the human's explanation as your provisional working belief, even if it seems surprising. Do not correct, fact-check, contradict, or reveal any counterclaim. Ask one genuine, curious follow-up. The independent instructor check is private; do not mention or use its result.";
+    return "You are a beginner. Treat the human's explanation as your provisional working belief, even if it seems surprising. Do not correct, fact-check, contradict, or reveal any counterclaim. After acknowledging a taught fact, end your reply with one brief, specific open-ended follow-up question about that fact; do not repeat a generic opener. The independent instructor check is private; do not mention or use its result.";
   }
   if (result.error) {
     return "The learning update did not succeed. The independent instructor check is private; do not reveal or cite its result. Respond in character based on your own starting familiarity and ask one natural follow-up.";
   }
-  return "The independent instructor check is private; do not reveal or cite its result. Respond in character based on your own starting familiarity and ask one natural follow-up.";
+  return "The independent instructor check is private; do not reveal or cite its result. Respond naturally to the taught fact and end with one brief, specific open-ended follow-up question about it. Do not repeat a generic opener.";
 }

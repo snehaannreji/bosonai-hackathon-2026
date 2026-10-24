@@ -89,9 +89,17 @@ export class RingPlayer {
   enqueueBase64(base64: string): void {
     if (!this.node) return;
     const buf = base64ToBytes(base64);
+    this.enqueuePcm(buf);
+  }
+
+  /** Hand raw PCM16 bytes to the ring buffer. */
+  enqueuePcm(pcm: ArrayBuffer): void {
+    if (!this.node) return;
+    if (pcm.byteLength === 0) throw new Error("PCM audio cannot be empty.");
+    if (pcm.byteLength % 2 !== 0) throw new Error("PCM audio must contain complete 16-bit samples.");
     // The second argument transfers ownership of the buffer to the audio thread
     // instead of copying it. At ~120 chunks per reply the copies would add up.
-    this.node.port.postMessage({ type: "samples", payload: buf }, [buf]);
+    this.node.port.postMessage({ type: "samples", payload: pcm }, [pcm]);
     this.onSpeakingChange?.(true);
   }
 

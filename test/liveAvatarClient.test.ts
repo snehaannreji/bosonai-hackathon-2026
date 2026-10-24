@@ -55,6 +55,14 @@ describe("integrated Boson talking-avatar client", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/avatar/lessons/lesson-1/end", expect.objectContaining({ keepalive: true }));
     expect(Events.instances[0].close).toHaveBeenCalled();
   });
+  it("passes the selected tagged TTS renderer to the avatar session", async () => {
+    const client = new LiveAvatarClient(callbacks(), "builtin_claire_v1", vi.fn(), "tagged-tts");
+    await open(client);
+    expect(fetchMock).toHaveBeenCalledWith("/api/avatar/lessons", expect.objectContaining({
+      body: JSON.stringify({ avatarId: "builtin_claire_v1", lessonId: undefined, audioRenderer: "tagged-tts" }),
+    }));
+    await client.close();
+  });
   it("plays only the avatar's synchronized audio track, and detaches it on cleanup", async () => {
     const cb = callbacks(); const client = new LiveAvatarClient(cb, "builtin_claire_v1", vi.fn()); await open(client);
     const element = { style: { display: "" }, remove: vi.fn() };

@@ -3,6 +3,7 @@ import express from "express";
 import dotenv from "dotenv";
 import { resolve } from "node:path";
 import { readRealtimeSettings } from "../src/realtime/runtimeConfig";
+import { buildTaggedSpeechInput, isSpeechEmotion } from "../src/realtime/speechTags";
 import { createAvatarRouter } from "./avatarSessions";
 import { createLessonService } from "./lessons";
 
@@ -54,6 +55,58 @@ app.use("/api/avatar", avatars.router);
 process.once("SIGTERM", () => { void avatars.close().finally(() => process.exit(0)); });
 process.once("SIGINT", () => { void avatars.close().finally(() => process.exit(0)); });
 app.get("/api/config", (_req, res) => res.json({ voiceConfigured: Boolean(BOSON_API_KEY), ...realtimeSettings }));
+app.post("/api/speech", async (req, res) => {
+  if (!BOSON_API_KEY) return res.status(503).json({ error: "Add BOSON_API_KEY to .env to use tagged Higgs TTS." });
+  const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
+  const emotion = req.body?.emotion;
+  if (!text || text.length > 5000) return res.status(400).json({ error: "Speech text must contain 1–5,000 characters." });
+  if (!isSpeechEmotion(emotion)) return res.status(400).json({ error: "Choose a supported speech emotion." });
+
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const controller = new AbortController();
+    timeout = setTimeout(() => controller.abort(), 180000);
+    res.on("close", () => {
+      if (!res.writableEnded) controller.abort();
+    });
+    const upstream = await fetch(`${BOSON_BASE_URL.replace(/\/$/, "")}/v1/audio/speech`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${BOSON_API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "higgs-tts-3",
+        input: buildTaggedSpeechInput(text, emotion),
+        voice: "default",
+        response_format: "pcm",
+        stream: true,
+      }),
+      signal: controller.signal,
+    });
+    if (!upstream.ok) {
+      console.error(`Tagged TTS failed: ${upstream.status}`);
+      return res.status(502).json({ error: `Boson tagged speech synthesis failed (${upstream.status}). Check your API key and available credit.` });
+    }
+    if (!upstream.body) {
+      return res.status(502).json({ error: "Boson returned no tagged speech audio." });
+    }
+    res.setHeader("Content-Type", "audio/pcm");
+    res.setHeader("X-Audio-Sample-Rate", "24000");
+    for await (const chunk of upstream.body) {
+      if (!res.write(Buffer.from(chunk))) {
+        await new Promise<void>(resolve => res.once("drain", resolve));
+      }
+    }
+    return res.end();
+  } catch (error) {
+    console.error("Tagged TTS request failed:", error);
+    if (res.headersSent) {
+      res.destroy(error instanceof Error ? error : undefined);
+      return;
+    }
+    return res.status(502).json({ error: "Could not reach Boson tagged speech synthesis." });
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+});
 
 /**
  * GET /api/token

@@ -1,5 +1,5 @@
 import { Room, RoomEvent, Track, type RemoteAudioTrack, type RemoteVideoTrack } from "livekit-client";
-import type { Activity, RealtimeCallbacks } from "./RealtimeClient";
+import type { Activity, AudioRenderer, RealtimeCallbacks } from "./RealtimeClient";
 import type { KnowledgeState } from "../state/knowledge";
 import type { ServerEvent } from "./events";
 
@@ -26,7 +26,7 @@ export class LiveAvatarClient {
   private timeout: ReturnType<typeof setTimeout> | null = null;
   private release: Promise<unknown> = Promise.resolve();
   private unload = () => { if (this.lessonId) navigator.sendBeacon(`/api/avatar/lessons/${this.lessonId}/end`, ""); };
-  constructor(private cb: RealtimeCallbacks, private avatarId: string, private onVideo: (track: RemoteVideoTrack | null) => void) {}
+  constructor(private cb: RealtimeCallbacks, private avatarId: string, private onVideo: (track: RemoteVideoTrack | null) => void, private audioRenderer: AudioRenderer = "realtime") {}
   get micActive() { return this.mic; }
 
   async connect() {
@@ -59,7 +59,7 @@ export class LiveAvatarClient {
     });
     try {
       await room.startAudio();
-      const lesson = await post("/api/avatar/lessons", { avatarId: this.avatarId, lessonId: this.cb.lesson?.id }) as { id: string; url: string; token: string };
+      const lesson = await post("/api/avatar/lessons", { avatarId: this.avatarId, lessonId: this.cb.lesson?.id, audioRenderer: this.audioRenderer }) as { id: string; url: string; token: string };
       if (generation !== this.generation) { await post(`/api/avatar/lessons/${lesson.id}/end`); return; }
       this.lessonId = lesson.id;
       window.addEventListener("pagehide", this.unload);
@@ -72,6 +72,8 @@ export class LiveAvatarClient {
           this.cb.onLog?.({ id: Date.now() + Math.random(), dir: "recv", type: message.event.type, at: Date.now(), raw: message.event });
           if (message.event.type === "error") this.cb.onError?.(String((message.event.error as { message?: string } | undefined)?.message ?? "Boson reported a voice session error."));
         } else if (message.kind === "knowledge" && message.state) this.cb.onKnowledgeChange?.(message.state);
+        else if (message.kind === "emotion") this.cb.onLog?.({ id: Date.now() + Math.random(), dir: "info", type: "emotion.tts_selected", at: Date.now(), raw: message });
+        else if (message.kind === "tts_error") this.cb.onError?.(message.message ?? "Tagged speech synthesis failed.");
         else if (message.kind === "activity" && message.activity) this.cb.onActivity?.(message.activity === "listening" && !this.mic ? "idle" : message.activity);
         else if (message.kind === "ready") { this.voiceReady = true; this.maybeReady(); }
         else if (message.kind === "error") this.fail(message.message ?? "Avatar session failed.");

@@ -1,4 +1,5 @@
 import { SERVER, type ServerEvent } from "../realtime/events";
+import { cleanSpokenTranscript } from "../realtime/speechTags";
 
 // The transcript, as a pure function of the event stream.
 //
@@ -310,7 +311,7 @@ export function transcriptReducer(
     case SERVER.audioTranscriptDelta: {
       const itemId = str(evt.item_id);
       if (!itemId) return state;
-      const delta = str(evt.delta) ?? "";
+      const delta = cleanSpokenTranscript(str(evt.delta) ?? "");
 
       let s = state;
       if (!s.items[itemId]) {
@@ -338,7 +339,8 @@ export function transcriptReducer(
       if (!itemId) return state;
       // `.done` carries the authoritative full text. Prefer it over our
       // accumulated deltas — if we joined them wrongly, this is the fix.
-      const authoritative = str(evt.transcript);
+      const rawTranscript = str(evt.transcript);
+      const authoritative = rawTranscript === undefined ? undefined : cleanSpokenTranscript(rawTranscript);
       return updateItem(state, itemId, (it) =>
         it.kind === "assistant"
           ? {
