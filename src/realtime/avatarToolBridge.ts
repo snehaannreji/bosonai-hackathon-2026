@@ -3,6 +3,8 @@ import { createKnowledgeTracker, type KnowledgeContext } from "../state/createKn
 import type { EvidenceAssessor, LessonDefinition } from "../state/lesson";
 import { CLIENT_TOOL_RESULT } from "../state/transcriptStore";
 import { functionCallOutput, responseCreate, type ClientEvent, type ServerEvent } from "./events";
+import type { CharacterId } from "../state/characters";
+import { isKevinConcentrationCommand } from "../state/kevinSpeech";
 
 interface Batch { promises: Promise<void>[]; outputs: ClientEvent[] }
 /** The same topic-aware tracker/evidence checks power voice and avatar modes. */
@@ -11,19 +13,27 @@ export class AvatarToolBridge {
   private handled = new Set<string>();
   private batch: Batch | null = null;
   private epoch = 0;
+  private kevinLearningStarted = false;
   constructor(private cb: {
     onEvent: (event: ServerEvent) => void;
     onKnowledge: (state: KnowledgeState) => void;
     send: (event: ClientEvent) => void;
-  }, lesson?: LessonDefinition, assess?: EvidenceAssessor) { this.tracker = createKnowledgeTracker(cb.onKnowledge, lesson, assess); }
+    onKevinConcentration?: () => void;
+  }, lesson?: LessonDefinition, assess?: EvidenceAssessor, private characterId: CharacterId = "alex") { this.tracker = createKnowledgeTracker(cb.onKnowledge, lesson, assess); }
   observeText(id: string, text: string) {
-    this.tracker.observeHuman(id, text);
+    const wasLearning = this.kevinLearningStarted;
+    this.activateKevinLearning(text);
+    if (this.characterId !== "kevin" || wasLearning) this.tracker.observeHuman(id, text);
     this.cb.onEvent({ type: "conversation.item.input_audio_transcription.completed", item_id: id, transcript: text });
   }
   handle(event: ServerEvent) {
     this.cb.onEvent(event);
     if (event.type === "response.created" || event.type === "input_audio_buffer.speech_started") this.epoch++;
-    if (event.type === "conversation.item.input_audio_transcription.completed" && typeof event.item_id === "string" && typeof event.transcript === "string") this.tracker.observeHuman(event.item_id, event.transcript);
+    if (event.type === "conversation.item.input_audio_transcription.completed" && typeof event.item_id === "string" && typeof event.transcript === "string") {
+      const wasLearning = this.kevinLearningStarted;
+      this.activateKevinLearning(event.transcript);
+      if (this.characterId !== "kevin" || wasLearning) this.tracker.observeHuman(event.item_id, event.transcript);
+    }
     if (event.type === "response.function_call_arguments.done") this.run(event);
     if (event.type === "response.done") {
       const response = event.response as { output?: ServerEvent[]; status?: string } | undefined;
@@ -52,11 +62,20 @@ export class AvatarToolBridge {
       let args: Record<string, unknown> = {};
       try { args = JSON.parse(String(event.arguments ?? "{}")) ?? {}; } catch { /* validator answers malformed arguments */ }
       let result;
-      try { result = event.name === "update_understanding" ? await this.tracker.update(args) : { error: "unknown_tool", summary: "Only update_understanding is available." }; }
+      try {
+        result = this.characterId === "kevin" && !this.kevinLearningStarted
+          ? { error: "learning_not_activated", summary: "Kevin is still in playful mode. No learning was recorded; wait until the user gives the concentration cue." }
+          : event.name === "update_understanding" ? await this.tracker.update(args) : { error: "unknown_tool", summary: "Only update_understanding is available." };
+      }
       catch { result = { error: "tool_failed", summary: "The evidence check failed; continue learning and retry next turn." }; }
       this.cb.onEvent({ type: CLIENT_TOOL_RESULT, call_id: callId, result, ms: 0 });
       batch.outputs.push(functionCallOutput(callId, JSON.stringify(result)));
     })();
     batch.promises.push(promise);
+  }
+  private activateKevinLearning(text: string) {
+    if (this.characterId !== "kevin" || this.kevinLearningStarted || !isKevinConcentrationCommand(text)) return;
+    this.kevinLearningStarted = true;
+    this.cb.onKevinConcentration?.();
   }
 }

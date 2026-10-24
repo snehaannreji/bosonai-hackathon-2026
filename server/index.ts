@@ -45,6 +45,9 @@ const BOSON_API_KEY = loadApiKey();
 
 const app = express();
 app.disable("x-powered-by");
+// Baby Yoda clip mode posts a validated local photo plus one short reply's
+// audio to the server so it can call Boson's documented video endpoint.
+app.use("/api/avatar/character-videos", express.json({ limit: "20mb" }));
 app.use(express.json({ limit: "128kb" }));
 app.use("/api", (_req, res, next) => { res.setHeader("Cache-Control", "no-store"); next(); });
 const lessonService = createLessonService(BOSON_API_KEY);

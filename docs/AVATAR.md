@@ -63,7 +63,13 @@ Ending a lesson, closing the tab, losing the event stream, leaving the room, or 
 
 ## Uploaded photos
 
-**Boson voice + photo** keeps your chosen photo in browser IndexedDB. That is a still portrait, separate from the preset used in talking-avatar mode. The published live API accepts a registered `avatar_id`; the full OpenAPI schema does not document a photo-registration endpoint. Boson reportedly supports custom photos for the team, but its registration instructions are still needed. Do not guess an endpoint or pass an image as an avatar ID.
+**Boson voice + photo** keeps your chosen photo in browser IndexedDB and only displays a still portrait. In that mode, the photo stays in this browser.
+
+## Baby Yoda talking clips
+
+The existing **Boson talking avatar** mode remains the live, interactive preset-avatar experience. For the Baby Yoda character only, **Baby Yoda talking clips** offers a turn-based image path: upload a JPG/PNG/WebP portrait, speak or type, let Higgs Realtime finish its reply, then Higgs Avatar generates a lip-synced video from that reply text and the chosen portrait. The clip plays with its generated audio before the microphone resumes. This mode uses the Boson API key and browser microphone, and does not require LiveKit or the Python worker.
+
+The supplied Baby Yoda portrait is used by default; upload another portrait above it to replace the default. The chosen portrait and reply text are sent through the local server to Boson for each clip. Higgs TTS uses a 10-second segment of the included baby-babble recording as a voice reference to synthesize the reply, and Higgs Avatar lip-syncs to that generated audio. This is experimental: because the reference is babbling rather than clear speech, the generated words may be hard to understand. Replies keep a short spoken thought with at most one brief "ba" vocalization. Normal TTS pacing avoids dragging out the babble; the avatar lip-syncs to the synthesized audio. The generated clip is retrieved from Boson and played in the browser; it is not the always-live LiveKit avatar. Boson's API supports a reference image with either driving audio or nested text-to-speech input. The speech request uses Boson's documented multipart ref_audio flow; no transcript is supplied because the reference contains babble rather than intelligible words. The app uses the returned speech audio as the avatar's driving audio so the voice and mouth animation stay in sync. Each generated-video minute is billable at the account's Higgs Avatar rate. [Boson API schema](https://docs.boson.ai/openapi.json) documents `POST /v1/videos`, status polling and MP4 retrieval; [Higgs TTS control tags](https://huggingface.co/bosonai/higgs-tts-3-4b/raw/main/PROMPTING.md) documents supported pitch and prosody controls.
 
 ## Configuration and diagnostics
 

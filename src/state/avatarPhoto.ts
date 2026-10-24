@@ -1,5 +1,6 @@
 export const MAX_AVATAR_BYTES = 10 * 1024 * 1024;
 export const AVATAR_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
+import type { CharacterId } from "./characters";
 export interface AvatarPhoto { blob: Blob; name: string }
 
 export function validateAvatarFile(file: Blob): void {
@@ -26,7 +27,9 @@ export async function decodeAvatarFile(file: Blob): Promise<void> {
 // Photos never leave the browser. Store the blob, not a temporary object URL.
 const DB_NAME = "teachback-avatar";
 const STORE = "photos";
-const KEY = "alex";
+// Use the bundled portrait after its update instead of a previously saved
+// upload with unwanted borders. The old IndexedDB photo remains untouched.
+const photoKey = (characterId: CharacterId) => characterId === "baby-yoda" ? "student:baby-yoda:portrait-v2" : characterId === "kevin" ? "student:kevin:portrait-v2" : `student:${characterId}`;
 
 function database(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -49,16 +52,16 @@ async function transaction<T>(mode: IDBTransactionMode, work: (store: IDBObjectS
   });
 }
 
-export async function loadAvatarPhoto(): Promise<AvatarPhoto | null> {
-  const stored: unknown = await transaction("readonly", store => store.get(KEY));
+export async function loadAvatarPhoto(characterId: CharacterId = "alex"): Promise<AvatarPhoto | null> {
+  const stored: unknown = await transaction("readonly", store => store.get(photoKey(characterId)));
   if (!stored || typeof stored !== "object" || !("blob" in stored) || !(stored.blob instanceof Blob) || !("name" in stored) || typeof stored.name !== "string") return null;
   validateAvatarFile(stored.blob);
   return { blob: stored.blob, name: stored.name };
 }
-export async function saveAvatarPhoto(photo: AvatarPhoto): Promise<void> {
+export async function saveAvatarPhoto(photo: AvatarPhoto, characterId: CharacterId = "alex"): Promise<void> {
   validateAvatarFile(photo.blob);
-  await transaction("readwrite", store => store.put(photo, KEY));
+  await transaction("readwrite", store => store.put(photo, photoKey(characterId)));
 }
-export async function removeAvatarPhoto(): Promise<void> {
-  await transaction("readwrite", store => store.delete(KEY));
+export async function removeAvatarPhoto(characterId: CharacterId = "alex"): Promise<void> {
+  await transaction("readwrite", store => store.delete(photoKey(characterId)));
 }

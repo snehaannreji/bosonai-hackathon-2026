@@ -333,6 +333,15 @@ export function transcriptReducer(
       );
     }
 
+    case SERVER.outputTextDelta: {
+      const itemId = str(evt.item_id);
+      if (!itemId) return state;
+      const delta = str(evt.delta) ?? "";
+      let s = state;
+      if (!s.items[itemId]) s = addItem(s, { kind: "assistant", itemId, text: "", status: "streaming", at: now }, prevId);
+      return updateItem(s, itemId, (it) => it.kind === "assistant" ? { ...it, text: it.text + delta, status: it.status === "interrupted" ? "interrupted" : "streaming" } : it);
+    }
+
     case SERVER.audioTranscriptDone: {
       const itemId = str(evt.item_id);
       if (!itemId) return state;
@@ -348,6 +357,13 @@ export function transcriptReducer(
             }
           : it,
       );
+    }
+
+    case SERVER.outputTextDone: {
+      const itemId = str(evt.item_id);
+      if (!itemId) return state;
+      const authoritative = str(evt.text);
+      return updateItem(state, itemId, (it) => it.kind === "assistant" ? { ...it, text: authoritative ?? it.text, status: it.status === "interrupted" ? "interrupted" : "complete" } : it);
     }
 
     case SERVER.idleTimeout:

@@ -15,7 +15,7 @@
     "probe": "tsx tools/probe.ts",
     "start": "NODE_ENV=production tsx server/index.ts",
     "avatar:config": "tsx tools/avatar-config.ts",
-    "avatar:setup": "bash tools/setup-avatar.sh",
+    "avatar:setup": "node tools/setup-avatar.mjs",
     "test:avatar": ".venv-avatar/bin/python -m unittest discover -s avatar -p 'test_*.py'",
     "probe:avatar": ".venv-avatar/bin/python tools/avatar-probe.py"
   },

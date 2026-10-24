@@ -74,6 +74,6 @@ export class KnowledgeTracker {
     if (status === "unknown") return reject("invalid_transition", "Use a new lesson to reset. Unknown cannot overwrite observed evidence.");
     this.state = { ...this.state, [c]: { status: status as Level, evidence: source[1], sourceId: source[0] } };
     this.onChange?.(this.snapshot());
-    return { summary: `${LABELS[c]} is now ${status}. Continue as Alex; do not read the dashboard aloud.`, state: this.snapshot() };
+    return { summary: `${LABELS[c]} is now ${status}. Continue as the student; do not read the dashboard aloud.`, state: this.snapshot() };
   }
 }

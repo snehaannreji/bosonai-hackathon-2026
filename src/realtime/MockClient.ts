@@ -3,6 +3,8 @@ import { CONCEPTS } from "../state/knowledge";
 import { createKnowledgeTracker, type KnowledgeContext } from "../state/createKnowledgeTracker";
 import { dispatch } from "../tools/registry";
 import { CLIENT_TOOL_RESULT } from "../state/transcriptStore";
+import { getCharacter } from "../state/characters";
+import { isKevinConcentrationCommand } from "../state/kevinSpeech";
 
 /** Text-only deterministic UI fixture. No microphone, network or synthesized voice. */
 export class MockClient {
@@ -10,13 +12,15 @@ export class MockClient {
   private tracker: KnowledgeContext;
   private explanations: string[] = [];
   private sequence = 0;
+  private kevinLearningStarted = false;
   readonly micActive = false;
   constructor(private cb: RealtimeCallbacks) { this.tracker = createKnowledgeTracker(cb.onKnowledgeChange, cb.lesson, cb.assessEvidence); }
   async connect() {
     this.active = true;
-    this.tracker.reset(); this.explanations = [];
+    this.tracker.reset(); this.explanations = []; this.kevinLearningStarted = false;
     this.cb.onConnectionState?.("open");
-    this.reply(this.cb.lesson ? `Hey, I’m Alex. ${this.cb.lesson.openingQuestion}` : "Hey, I'm Alex. I thought the gradient points toward the minimum. Is that how it works?");
+    const character = getCharacter(this.cb.characterId);
+    this.reply(this.cb.characterId === "kevin" ? "Banana!" : this.cb.lesson ? `Hey, I’m ${character.name}. ${this.cb.lesson.openingQuestion}` : `Hey, I'm ${character.name}. I thought the gradient points toward the minimum. Is that how it works?`);
   }
   disconnect() { this.active = false; this.cb.onConnectionState?.("closed"); this.cb.onActivity?.("idle"); }
   async close() { this.disconnect(); }
@@ -25,8 +29,15 @@ export class MockClient {
   async sendUserText(text: string) {
     if (!this.active) return;
     const item = `mock-human-${++this.sequence}`;
-    this.tracker.observeHuman(item, text);
     this.cb.onServerEvent?.({ type: "conversation.item.input_audio_transcription.completed", item_id: item, transcript: text });
+    if (this.cb.characterId === "kevin" && !this.kevinLearningStarted) {
+      if (isKevinConcentrationCommand(text)) {
+        this.kevinLearningStarted = true;
+        this.reply("Okay! I am concentrating now. Teach me the first idea!");
+      } else this.reply(Math.random() < 0.5 ? "Ha ha ha!" : "Banana!");
+      return;
+    }
+    this.tracker.observeHuman(item, text);
     if (this.cb.lesson) {
       if (/teach back|explain it back|quiz/i.test(text)) {
         this.reply(this.explanations.length ? `Let me try: ${this.explanations.at(-1)!.slice(0, 220)} Did I explain that clearly?` : `I’m still new to ${this.cb.lesson.topic}. Could you explain the main idea first?`);
@@ -66,6 +77,11 @@ export class MockClient {
       : "I'm still a little confused. What direction does the gradient point, and why would we step the other way?");
   }
   private reply(text: string) {
+    if (this.cb.characterId === "baby-yoda") {
+      text = text.replace(/^That helps\./, "Hmm, helpful that is.")
+        .replace(/^Oh, that helps\./, "Hmm, helpful that is.")
+        .replace(/^Let me try:/, "Hmm, try I will:");
+    }
     const item_id = `mock-alex-${++this.sequence}`;
     this.cb.onServerEvent?.({ type: "response.output_audio_transcript.delta", item_id, delta: text });
     this.cb.onServerEvent?.({ type: "response.output_audio_transcript.done", item_id, transcript: text });

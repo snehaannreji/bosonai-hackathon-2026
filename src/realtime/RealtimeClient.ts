@@ -11,6 +11,8 @@ import {
   type ServerEvent,
 } from "./events";
 import { buildSessionConfig } from "./sessionConfig";
+import { formatBabySpeech } from "../state/babySpeech";
+import { formatKevinSpeech, isKevinConcentrationCommand, kevinPlayModeReply } from "../state/kevinSpeech";
 import { RingPlayer } from "../audio/playback";
 import { MicCapture } from "../audio/capture";
 import { dispatch as dispatchTool } from "../tools/registry";
@@ -19,6 +21,8 @@ import type { KnowledgeState } from "../state/knowledge";
 import { createKnowledgeTracker, type KnowledgeContext } from "../state/createKnowledgeTracker";
 import type { LessonDefinition, EvidenceAssessor } from "../state/lesson";
 import { buildRealtimeUrl, type RealtimeCredentials } from "./runtimeConfig";
+import type { CharacterId } from "../state/characters";
+import { DEFAULT_LEARNER_SETTINGS, type LearnerSettings } from "../state/learnerSettings";
 
 export type ConnectionState = "idle" | "connecting" | "open" | "closing" | "closed";
 
@@ -46,8 +50,14 @@ export interface RealtimeCallbacks {
   /** Mints a fresh ephemeral key for each connection. Required. */
   tokenProvider: () => Promise<RealtimeCredentials>;
   lesson?: LessonDefinition;
+  characterId?: CharacterId;
+  learnerSettings?: LearnerSettings;
+  sourceMaterial?: string;
   assessEvidence?: EvidenceAssessor;
   onKnowledgeChange?: (state: KnowledgeState) => void;
+  outputMode?: "audio" | "text";
+  /** Called with a completed text reply when using text output for a generated avatar clip. */
+  onAssistantReply?: (text: string) => void;
   onError?: (message: string) => void;
 }
 
@@ -67,6 +77,9 @@ export class RealtimeClient {
   private turnEpoch = 0;
   private generation = 0;
   private sessionReady = false;
+  private assistantReplyText = "";
+  private kevinLearningStarted = false;
+  private kevinPlayReplyCount = 0;
 
   /**
    * The assistant item currently producing audio. This is what we truncate on
@@ -109,6 +122,7 @@ export class RealtimeClient {
    * including a user double-clicking the button.
    */
   private connecting = false;
+  private model = "";
 
   constructor(callbacks: RealtimeCallbacks) {
     this.cb = callbacks;
@@ -132,7 +146,7 @@ export class RealtimeClient {
 
   /** Start streaming microphone audio. Throws if permission is denied. */
   async startMic(): Promise<void> {
-    if (!this.sessionReady) throw new Error("Wait for Alex to connect before enabling the microphone.");
+    if (!this.sessionReady) throw new Error("Wait for the student to connect before enabling the microphone.");
     try { await this.capture.start(); }
     catch (error) { await this.capture.stop(); throw error; }
     if (!this.sessionReady) { await this.capture.stop(); return; }
@@ -181,6 +195,7 @@ export class RealtimeClient {
       return;
     }
     if (generation !== this.generation) return;
+    this.model = credentials.model;
 
     // A browser cannot set headers on a WebSocket handshake, so there is no
     // `Authorization` header to use. The API takes the credential as a
@@ -193,7 +208,7 @@ export class RealtimeClient {
       if (generation !== this.generation) return;
       this.connecting = false;
       this.info("Socket open — sending session.update.");
-      this.send(buildSessionConfig(credentials.model, this.cb.lesson));
+      this.send(buildSessionConfig(credentials.model, this.cb.lesson, this.cb.characterId, this.cb.outputMode, this.cb.learnerSettings ?? DEFAULT_LEARNER_SETTINGS, this.cb.sourceMaterial));
     };
     ws.onmessage = (ev) => { if (generation === this.generation) this.onMessage(ev); };
     ws.onerror = () => this.info("WebSocket error — the close code below has the detail.");
@@ -237,7 +252,9 @@ export class RealtimeClient {
       return;
     }
     const item_id = `typed-${Date.now()}-${++logSeq}`;
-    this.knowledge.observeHuman(item_id, text);
+    const wasLearning = this.kevinLearningStarted;
+    this.activateKevinLearning(text);
+    if (this.cb.characterId !== "kevin" || wasLearning) this.knowledge.observeHuman(item_id, text);
     this.cb.onServerEvent?.({ type: SERVER.transcriptionCompleted, item_id, transcript: text });
     this.send(userTextItem(text));
     // Adding the message does not start a turn. This does.
@@ -249,6 +266,12 @@ export class RealtimeClient {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     this.ws.send(JSON.stringify(evt));
     this.log("send", evt.type, evt);
+  }
+
+  updateLearnerSettings(settings: LearnerSettings, sourceMaterial = ""): void {
+    this.cb.learnerSettings = settings;
+    this.cb.sourceMaterial = sourceMaterial;
+    if (this.model && this.sessionReady) this.send(buildSessionConfig(this.model, this.cb.lesson, this.cb.characterId, this.cb.outputMode, settings, sourceMaterial, this.kevinLearningStarted));
   }
 
   async close(): Promise<void> {
@@ -268,12 +291,27 @@ export class RealtimeClient {
       return;
     }
 
+    if (this.cb.characterId === "baby-yoda" && this.cb.outputMode === "text" && evt.type === SERVER.outputTextDone && typeof evt.text === "string") {
+      evt = { ...evt, text: formatBabySpeech(evt.text) };
+    }
+    if (this.cb.characterId === "kevin" && this.cb.outputMode === "text" && evt.type === SERVER.outputTextDone && typeof evt.text === "string") {
+      evt = { ...evt, text: this.kevinLearningStarted ? formatKevinSpeech(evt.text) : kevinPlayModeReply(this.kevinPlayReplyCount++) };
+    }
+
     // Log first, act second. Everything the server says shows up in the drawer,
     // including the events no branch below handles.
     this.log("recv", evt.type, evt);
-    this.cb.onServerEvent?.(evt);
+    const hideKevinPlayDelta = this.cb.characterId === "kevin"
+      && this.cb.outputMode === "text"
+      && !this.kevinLearningStarted
+      && evt.type === SERVER.outputTextDelta;
+    if (!hideKevinPlayDelta) this.cb.onServerEvent?.(evt);
+    if (!hideKevinPlayDelta && evt.type === SERVER.outputTextDelta && typeof evt.delta === "string") this.assistantReplyText += evt.delta;
+    if (evt.type === SERVER.outputTextDone && typeof evt.text === "string") this.assistantReplyText = evt.text;
     if (evt.type === SERVER.transcriptionCompleted && typeof evt.item_id === "string" && typeof evt.transcript === "string") {
-      this.knowledge.observeHuman(evt.item_id, evt.transcript);
+      const wasLearning = this.kevinLearningStarted;
+      this.activateKevinLearning(evt.transcript);
+      if (this.cb.characterId !== "kevin" || wasLearning) this.knowledge.observeHuman(evt.item_id, evt.transcript);
     }
 
     switch (evt.type) {
@@ -288,6 +326,7 @@ export class RealtimeClient {
         // maths below measures into *this* reply, not the whole session.
         this.player.reset();
         this.toolBatch = null;
+        this.assistantReplyText = "";
         this.setActivity("thinking");
         break;
 
@@ -380,7 +419,9 @@ export class RealtimeClient {
     const p = (async () => {
       let result: unknown;
       try {
-        result = await dispatchTool(name, args, this.knowledge);
+        result = this.cb.characterId === "kevin" && !this.kevinLearningStarted
+          ? { error: "learning_not_activated", summary: "Kevin is still in playful mode. No learning was recorded; wait until the user gives the concentration cue." }
+          : await dispatchTool(name, args, this.knowledge);
       } catch (e) {
         // A thrown handler must still produce an output, or the model waits
         // forever for a call_id that never comes back.
@@ -400,6 +441,14 @@ export class RealtimeClient {
     })();
 
     batch.promises.push(p);
+  }
+
+  private activateKevinLearning(text: string): void {
+    if (this.cb.characterId !== "kevin" || this.kevinLearningStarted || !isKevinConcentrationCommand(text)) return;
+    this.kevinLearningStarted = true;
+    if (this.model && this.sessionReady) {
+      this.send(buildSessionConfig(this.model, this.cb.lesson, this.cb.characterId, this.cb.outputMode, this.cb.learnerSettings ?? DEFAULT_LEARNER_SETTINGS, this.cb.sourceMaterial, true));
+    }
   }
 
   /**
@@ -422,6 +471,12 @@ export class RealtimeClient {
         }
         this.startToolCall(item.call_id, item.name, args);
       }
+    }
+
+    if (this.cb.outputMode === "text" && this.assistantReplyText.trim()) {
+      const reply = this.assistantReplyText.trim();
+      this.assistantReplyText = "";
+      this.cb.onAssistantReply?.(reply);
     }
 
     if (this.toolBatch && this.toolBatch.promises.length > 0) {

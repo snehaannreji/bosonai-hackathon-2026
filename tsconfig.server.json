@@ -24,6 +24,9 @@
     "src/tools/**/*.ts",
     "src/state/knowledge.ts",
     "src/state/lesson.ts",
+    "src/state/characters.ts",
+    "src/state/kevinSpeech.ts",
+    "src/state/learnerSettings.ts",
     "src/state/topicKnowledge.ts",
     "src/state/createKnowledgeTracker.ts"
   ]
