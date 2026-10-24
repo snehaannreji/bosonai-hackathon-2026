@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "composite": true,
+    "types": ["node"]
+  },
+  // The probe shares the app's session config and event helpers, so those two
+  // files are compiled as part of this project too.
+  "include": [
+    "server",
+    "tools",
+    "src/realtime/events.ts",
+    "src/realtime/sessionConfig.ts",
+    "src/realtime/runtimeConfig.ts",
+    "src/realtime/avatarToolBridge.ts",
+    "src/realtime/catalogCache.ts",
+    "src/state/transcriptStore.ts",
+    "src/tools/**/*.ts",
+    "src/state/knowledge.ts",
+    "src/state/lesson.ts",
+    "src/state/topicKnowledge.ts",
+    "src/state/createKnowledgeTracker.ts"
+  ]
+}

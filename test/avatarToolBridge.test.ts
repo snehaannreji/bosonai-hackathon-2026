@@ -1,0 +1,55 @@
+import { describe, expect, it, vi } from "vitest";
+import { AvatarToolBridge } from "../src/realtime/avatarToolBridge";
+const evidence = "The gradient points in the direction of steepest increase of loss. The negative gradient goes downhill to decrease the loss.";
+const call = { type: "response.function_call_arguments.done", name: "update_understanding", call_id: "c1", arguments: JSON.stringify({ concept: "gradient_direction", evidence }) };
+describe("avatar server learning bridge", async () => {
+  it("grounds voice evidence and returns one batched continuation despite duplicate calls", async () => {
+    const cb = { onEvent: vi.fn(), onKnowledge: vi.fn(), send: vi.fn() };
+    const bridge = new AvatarToolBridge(cb);
+    bridge.handle({ type: "conversation.item.input_audio_transcription.completed", item_id: "u1", transcript: evidence });
+    bridge.handle(call); bridge.handle(call);
+    bridge.handle({ type: "response.done", response: { status: "completed", output: [{ ...call, type: "function_call" }] } });
+    expect(cb.onKnowledge).toHaveBeenLastCalledWith(expect.objectContaining({ gradient_direction: expect.objectContaining({ status: "understood", sourceId: "u1" }) }));
+    await vi.waitFor(() => expect(cb.send).toHaveBeenCalledTimes(2));
+    expect(cb.send.mock.calls[0][0]).toMatchObject({ type: "conversation.item.create", item: { type: "function_call_output", call_id: "c1" } });
+    expect(cb.send.mock.calls[1][0]).toEqual({ type: "response.create" });
+  });
+  it("does not invent learning when a voice tool quotes words absent from the human transcript", async () => {
+    const cb = { onEvent: vi.fn(), onKnowledge: vi.fn(), send: vi.fn() };
+    const bridge = new AvatarToolBridge(cb); bridge.handle(call); bridge.handle({ type: "response.done" });
+    expect(cb.onKnowledge).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(cb.onEvent).toHaveBeenCalledWith(expect.objectContaining({ type: "client.tool_result", result: expect.objectContaining({ error: "ungrounded_evidence" }) })));
+  });
+  it("supports typed explanations and function calls announced only in response.done", async () => {
+    const cb = { onEvent: vi.fn(), onKnowledge: vi.fn(), send: vi.fn() };
+    const bridge = new AvatarToolBridge(cb); bridge.observeText("typed-1", evidence);
+    bridge.handle({ type: "response.done", response: { output: [{ ...call, type: "function_call" }] } });
+    await vi.waitFor(() => expect(cb.onKnowledge).toHaveBeenCalled());
+    expect(cb.onEvent).toHaveBeenCalledWith(expect.objectContaining({ type: "response.function_call_arguments.done", call_id: "c1" }));
+  });
+  it("answers outstanding tools on cancellation without starting competing speech", async () => {
+    const cb = { onEvent: vi.fn(), onKnowledge: vi.fn(), send: vi.fn() };
+    const bridge = new AvatarToolBridge(cb); bridge.observeText("typed-1", evidence); bridge.handle(call);
+    bridge.handle({ type: "response.done", response: { status: "cancelled" } });
+    await vi.waitFor(() => expect(cb.send).toHaveBeenCalledTimes(1));
+    expect(cb.send.mock.calls[0][0].type).toBe("conversation.item.create");
+  });
+});
+
+it("does not start delayed assessment speech over a new human turn in an arbitrary-topic avatar lesson", async () => {
+  const { mockLesson } = await import("../src/state/lesson");
+  const lesson = { ...mockLesson("Photosynthesis"), mock: false };
+  let resolve!: (result: import("../src/state/lesson").EvidenceAssessment) => void;
+  const cb = { onEvent: vi.fn(), onKnowledge: vi.fn(), send: vi.fn() };
+  const bridge = new AvatarToolBridge(cb, lesson, () => new Promise(r => { resolve = r; }));
+  const text = "Plants use sunlight to convert carbon dioxide and water into glucose and oxygen.";
+  bridge.observeText("u1", text);
+  bridge.handle({ type: "response.function_call_arguments.done", name: "update_understanding", call_id: "slow-1", arguments: JSON.stringify({ concept: "concept_1", evidence: text }) });
+  bridge.handle({ type: "response.done", response: { status: "completed" } });
+  expect(cb.send).not.toHaveBeenCalled();
+  bridge.handle({ type: "input_audio_buffer.speech_started", item_id: "u2" });
+  resolve({ matchedCriteria: ["criterion_1", "criterion_2"], misconception: false, reason: "Both criteria are explained." });
+  await vi.waitFor(() => expect(cb.send).toHaveBeenCalledTimes(1));
+  expect(cb.send.mock.calls[0][0]).toMatchObject({ type: "conversation.item.create", item: { type: "function_call_output" } });
+  expect(cb.send).not.toHaveBeenCalledWith({ type: "response.create" });
+});

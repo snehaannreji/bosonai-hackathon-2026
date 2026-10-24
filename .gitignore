@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.env
+.env.local
+.env.*
+!.env.example
+.venv/
+.venv-avatar/
+__pycache__/
+avatar/session-config.json
+*.local
+.DS_Store
+*.tsbuildinfo
+captures/
+higgs-realtime-tutorial-plan.md

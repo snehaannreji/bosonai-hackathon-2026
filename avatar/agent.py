@@ -1,0 +1,193 @@
+"""Boson's official realtime/LiveKit avatar bridge, with a local Node IPC adapter.
+The classroom starts --managed; direct CLI use remains available for diagnostics.
+Microphone transport and synchronized avatar playout use LiveKit's SDKs.
+"""
+import asyncio
+import base64
+import json
+import os
+import signal
+import sys
+from datetime import timedelta
+from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+
+import requests
+import websockets
+from dotenv import load_dotenv
+from livekit import api, rtc
+from livekit.agents.voice.avatar import DataStreamAudioOutput
+
+if "--check" in sys.argv:
+    print("Avatar dependencies ready.")
+    sys.exit(0)
+
+load_dotenv()
+MANAGED = "--managed" in sys.argv
+ROOM = os.environ.get("TEACHBACK_ROOM", "avatar-demo")
+AGENT_IDENTITY = "agent"
+AVATAR_IDENTITY = "boson-avatar"
+AVATAR_ID = os.environ.get("TEACHBACK_AVATAR_ID") or os.environ.get("BOSON_AVATAR_ID") or "builtin_claire_v1"
+MAX_DURATION_SECONDS = 600
+BOSON = {"Authorization": f"Bearer {os.environ['BOSON_API_KEY']}"}
+BOSON_BASE_URL = os.environ.get("BOSON_BASE_URL", "https://api.boson.ai").rstrip("/").removesuffix("/v1") + "/v1"
+BOSON_REALTIME_URL = os.environ.get("BOSON_REALTIME_URL", "wss://api.boson.ai/v1/realtime")
+
+
+def report(kind, **values):
+    print(json.dumps({"kind": kind, **values}), flush=True)
+
+
+def livekit_token(identity, *, publish, subscribe, publish_on_behalf=None):
+    token = (api.AccessToken(os.environ["LIVEKIT_API_KEY"], os.environ["LIVEKIT_API_SECRET"])
+             .with_identity(identity)
+             .with_grants(api.VideoGrants(room_join=True, room=ROOM,
+                                         can_publish=publish, can_subscribe=subscribe,
+                                         can_publish_data=True,
+                                         can_publish_sources=["camera", "microphone"] if publish else None))
+             .with_ttl(timedelta(seconds=MAX_DURATION_SECONDS + 300)))
+    if publish_on_behalf:
+        token = token.with_kind("agent").with_attributes({"lk.publish_on_behalf": publish_on_behalf})
+    return token.to_jwt()
+
+
+async def main():
+    config = json.loads(os.environ["TEACHBACK_SESSION_CONFIG"]) if MANAGED else json.loads(Path(__file__).with_name("session-config.json").read_text())
+    model = os.environ.get("BOSON_REALTIME_MODEL", "").strip() or "higgs-realtime-1.5-preview"
+    if config["session"]["model"] != model:
+        raise RuntimeError("Model changed; rerun npm run avatar:config.")
+    endpoint = urlsplit(BOSON_REALTIME_URL)
+    query = dict(parse_qsl(endpoint.query)); query["model"] = model
+    realtime_url = urlunsplit(endpoint._replace(query=urlencode(query)))
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stop.set)
+    room = rtc.Room()
+    session_id = None
+    tasks = set()
+    output = None
+    def task(coro):
+        created = asyncio.create_task(coro); tasks.add(created)
+        created.add_done_callback(tasks.discard)
+        return created
+    try:
+        # Official Boson session request. No automatic retries: creation is not idempotent.
+        response = await asyncio.to_thread(requests.post, f"{BOSON_BASE_URL}/avatar/sessions",
+            headers=BOSON, json={"avatar_id": AVATAR_ID, "transport": {
+                "type": "livekit", "url": os.environ["LIVEKIT_URL"], "room_name": ROOM,
+                "participant_token": livekit_token(AVATAR_IDENTITY, publish=True, subscribe=False, publish_on_behalf=AGENT_IDENTITY),
+                "participant_identity": AVATAR_IDENTITY, "publisher_identity": AGENT_IDENTITY,
+            }, "max_duration_seconds": MAX_DURATION_SECONDS}, timeout=60)
+        if not response.ok:
+            try: code = response.json().get("error", {}).get("code", "request_failed")
+            except ValueError: code = "request_failed"
+            report("error", message=f"Boson avatar session failed ({response.status_code}: {code}). Check account access, credit, and LiveKit Cloud settings.")
+            return
+        session_id = response.json()["id"]
+        report("avatar_session", id=session_id)
+        if stop.is_set(): return
+        await room.connect(os.environ["LIVEKIT_URL"], livekit_token(AGENT_IDENTITY, publish=True, subscribe=True))
+        output = DataStreamAudioOutput(room, destination_identity=AVATAR_IDENTITY,
+            sample_rate=24000, wait_remote_track=rtc.TrackKind.KIND_AUDIO)
+
+        async with websockets.connect(realtime_url, additional_headers=BOSON) as ws:
+            await ws.send(json.dumps(config))
+            activity = None
+            def set_activity(value):
+                nonlocal activity
+                if activity != value:
+                    activity = value; report("activity", activity=value)
+            current_item = None
+            speaking = False
+            truncate_item = None
+            forwarded = set()
+
+            @output.on("playback_finished")
+            def played(event):
+                nonlocal speaking, truncate_item
+                speaking = False
+                if truncate_item and event.interrupted:
+                    item = truncate_item; truncate_item = None
+                    # The SDK reports how much actually played, including after clear_buffer.
+                    task(ws.send(json.dumps({"type": "conversation.item.truncate", "item_id": item,
+                         "content_index": 0, "audio_end_ms": max(0, round(event.playback_position * 1000))})))
+                set_activity("listening")
+
+            async def forward_audio(track):
+                stream = rtc.AudioStream(track, sample_rate=24000, num_channels=1)
+                try:
+                    async for event in stream:
+                        await ws.send(json.dumps({"type": "input_audio_buffer.append", "audio": base64.b64encode(bytes(event.frame.data)).decode()}))
+                except websockets.ConnectionClosed: pass
+                finally:
+                    await stream.aclose()
+
+            @room.on("track_subscribed")
+            def track_subscribed(track, _publication, participant):
+                if participant.identity == "user" and track.kind == rtc.TrackKind.KIND_AUDIO and track.sid not in forwarded:
+                    forwarded.add(track.sid); task(forward_audio(track))
+
+            @room.on("participant_disconnected")
+            def participant_left(participant):
+                if participant.identity == "user": stop.set()
+
+            for participant in room.remote_participants.values():
+                for publication in participant.track_publications.values():
+                    if publication.track is not None: track_subscribed(publication.track, publication, participant)
+
+            async def commands():
+                reader = asyncio.StreamReader()
+                transport, _ = await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(reader), sys.stdin)
+                try:
+                    while line := await reader.readline():
+                        try:
+                            command = json.loads(line)
+                            if command.get("kind") == "send": await ws.send(json.dumps(command["event"]))
+                        except (ValueError, KeyError): pass
+                    stop.set()
+                finally: transport.close()
+
+            async def receive():
+                nonlocal current_item, speaking, truncate_item
+                async for message in ws:
+                    event = json.loads(message)
+                    kind = event["type"]
+                    if kind != "response.output_audio.delta": report("server_event", event=event)
+                    if kind in ("session.created", "session.updated"):
+                        report("ready"); set_activity("listening")
+                    elif kind == "response.output_audio.delta":
+                        if event.get("item_id"): current_item = event["item_id"]
+                        pcm = base64.b64decode(event["delta"])
+                        await output.capture_frame(rtc.AudioFrame(pcm, 24000, 1, len(pcm) // 2))
+                        speaking = True; set_activity("speaking")
+                    elif kind == "response.done":
+                        if speaking: output.flush()
+                        elif activity != "listening": set_activity("listening")
+                    elif kind == "input_audio_buffer.speech_started":
+                        if speaking:
+                            truncate_item = current_item; output.clear_buffer(); speaking = False
+                        set_activity("listening")
+                    elif kind == "input_audio_buffer.speech_stopped": set_activity("thinking")
+                stop.set()
+
+            receiver = task(receive())
+            receiver.add_done_callback(lambda _: stop.set())
+            if MANAGED: task(commands())
+            await stop.wait()
+    finally:
+        for pending in list(tasks): pending.cancel()
+        if tasks: await asyncio.gather(*tasks, return_exceptions=True)
+        if session_id:
+            try: await asyncio.to_thread(requests.delete, f"{BOSON_BASE_URL}/avatar/sessions/{session_id}", headers=BOSON, timeout=10)
+            except requests.RequestException: pass
+        await room.disconnect()
+
+
+if __name__ == "__main__":
+    try: asyncio.run(main())
+    except KeyboardInterrupt: pass
+    except Exception as error:
+        # No headers, tokens or full upstream response bodies in logs.
+        report("error", message=f"Avatar agent failed ({type(error).__name__}). Check Python dependencies, LiveKit settings, and network access.")
+        sys.exit(1)

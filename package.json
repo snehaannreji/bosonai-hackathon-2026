@@ -1,0 +1,46 @@
+{
+  "name": "human-intelligence-teachback",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Teach Alex gradient descent with Boson Higgs Realtime",
+  "scripts": {
+    "dev": "concurrently -n server,client -c blue,green \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:client": "vite",
+    "dev:server": "tsx watch server/index.ts",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -b --noEmit",
+    "test": "vitest run",
+    "probe": "tsx tools/probe.ts",
+    "start": "NODE_ENV=production tsx server/index.ts",
+    "avatar:config": "tsx tools/avatar-config.ts",
+    "avatar:setup": "bash tools/setup-avatar.sh",
+    "test:avatar": ".venv-avatar/bin/python -m unittest discover -s avatar -p 'test_*.py'",
+    "probe:avatar": ".venv-avatar/bin/python tools/avatar-probe.py"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "livekit-client": "^2.23.0",
+    "livekit-server-sdk": "^2.19.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.5",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^6.1.2",
+    "concurrently": "^9.1.2",
+    "fake-indexeddb": "^6.2.6",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5"
+  },
+  "engines": {
+    "node": ">=22.22.0"
+  }
+}

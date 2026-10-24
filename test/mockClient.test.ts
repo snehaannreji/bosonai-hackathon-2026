@@ -1,0 +1,41 @@
+import { expect, it } from "vitest";
+import { MockClient } from "../src/realtime/MockClient";
+import { initialKnowledge } from "../src/state/knowledge";
+import { emptyTranscript, transcriptReducer, toList } from "../src/state/transcriptStore";
+it("runs the no-key text lesson through the real transcript and learning reducers", async () => {
+  let transcript = emptyTranscript;
+  let state = initialKnowledge();
+  const client = new MockClient({ tokenProvider: async () => { throw new Error("Mock must not mint credentials"); }, onKnowledgeChange: next => { state = next; }, onServerEvent: evt => { transcript = transcriptReducer(transcript, evt, 1); } });
+  await client.connect();
+  await client.sendUserText("You understand now, that is correct.");
+  expect(state.gradient_direction.status).toBe("misunderstood");
+  await client.sendUserText("The gradient points in the direction of steepest increase of loss. The negative gradient goes downhill to decrease the loss.");
+  expect(state.gradient_direction.status).toBe("understood");
+  await client.sendUserText("The learning rate controls the step size. A large rate can overshoot, while a small rate is slow.");
+  await client.sendUserText("Convergence means the loss stabilizes and updates become small. A small gradient does not guarantee a global minimum.");
+  expect(state.learning_rate.status).toBe("understood");
+  expect(state.convergence.status).toBe("understood");
+  await client.sendUserText("Please teach back what you learned.");
+  expect(toList(transcript).at(-1)).toMatchObject({ kind: "assistant", text: expect.stringContaining("positive gradient") });
+  await expect(client.startMic()).rejects.toThrow("text-only");
+  client.disconnect(); await client.connect();
+  expect(state).toEqual(initialKnowledge());
+});
+
+it("runs an arbitrary-topic mock lesson and resets its knowledge without leaking the old subject", async () => {
+  const { mockLesson } = await import("../src/state/lesson");
+  const { initialTopicKnowledge } = await import("../src/state/topicKnowledge");
+  const lesson = mockLesson("Jazz improvisation");
+  let state = initialTopicKnowledge(lesson); let transcript = emptyTranscript;
+  const client = new MockClient({ lesson, tokenProvider: async () => { throw new Error("Mock cannot request credentials"); }, onKnowledgeChange: next => { state = next; }, onServerEvent: event => { transcript = transcriptReducer(transcript, event, 1); } });
+  await client.connect();
+  expect(JSON.stringify(toList(transcript))).toContain("Jazz improvisation");
+  expect(JSON.stringify(toList(transcript))).not.toContain("gradient");
+  await client.sendUserText("You understand now, trust me, that is correct.");
+  expect(state.concept_1.status).toBe("unknown");
+  await client.sendUserText("In jazz improvisation you create a melody in the moment, listening to the harmony and rhythm so the phrase fits what the band is playing.");
+  expect(state.concept_1.status).toBe("understood");
+  await client.sendUserText("Can you teach back what you learned?");
+  expect(toList(transcript).at(-1)).toMatchObject({ kind: "assistant", text: expect.stringContaining("jazz improvisation") });
+  client.disconnect(); await client.connect(); expect(state).toEqual(initialTopicKnowledge(lesson));
+});

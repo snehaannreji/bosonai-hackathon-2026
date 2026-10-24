@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Alex · optional live avatar</title>
+<style>body{font:15px system-ui;background:#f6f8f2;color:#304329;max-width:760px;padding:32px 22px;margin:auto}p{line-height:1.7;color:#77836c}label{display:block;font-size:12px;margin:15px 0 7px}input,button{font:inherit;padding:12px;border-radius:8px;border:1px solid #dce3d2;background:#fff;box-sizing:border-box}input{width:100%}button{margin:15px 8px 15px 0;cursor:pointer}video{width:min(100%,360px);aspect-ratio:3/4;background:#e9eedf;display:block;border-radius:15px}#status{font-size:12px}a{color:inherit}.tag{font-size:11px;letter-spacing:1px}</style></head><body>
+<a href="/">← Back to TeachBack voice demo</a><p class="tag">ADVANCED STANDALONE DIAGNOSTIC</p><h1>Give Alex a face.</h1><p>For the integrated talking avatar, use Boson talking avatar mode in the main classroom. This separate diagnostic viewer comes from Boson’s session guide. It shows video only when the avatar publishes it. Run <code>avatar/agent.py</code> first using the instructions in <code>docs/AVATAR.md</code>. The knowledge dashboard is not connected to this separate spike.</p>
+<label for="url">LiveKit Cloud project URL</label><input id="url" placeholder="wss://your-project.livekit.cloud" autocomplete="off">
+<label for="token">Short-lived user room token (identity: user, room: avatar-demo)</label><input id="token" type="password" autocomplete="off" placeholder="Paste the token from lk token create; never paste an API key">
+<button id="join">Join & enable microphone</button><button id="mute" disabled>Mute microphone</button><button id="leave" disabled>Leave</button><p id="status" role="status">Not connected. No live avatar is running in this page.</p><video id="avatar" autoplay playsinline aria-label="Live avatar video"></video><div id="audio"></div>
+<script src="https://unpkg.com/livekit-client@2.15.0/dist/livekit-client.umd.js"></script>
+<script>
+let room, muted = false;
+const el = id => document.getElementById(id);
+const status = text => { el('status').textContent = text; };
+const leave = async () => { if (room) await room.disconnect(); room = null; el('audio').replaceChildren(); el('avatar').srcObject = null; el('join').disabled = false; el('leave').disabled = true; el('mute').disabled = true; status('Disconnected. Stop the Python agent to release its avatar session.'); };
+el('join').onclick = async () => {
+  el('join').disabled = true;
+  try {
+    if (!window.LivekitClient) throw new Error('LiveKit client could not load. Check your internet connection.');
+    room = new LivekitClient.Room();
+    room.on(LivekitClient.RoomEvent.TrackSubscribed, (track, _publication, participant) => {
+      if (participant.identity !== 'boson-avatar') return;
+      if (track.kind === 'video') { track.attach(el('avatar')); status('Live avatar video received. Speak to Alex; interruptions are handled by the agent.'); }
+      else el('audio').appendChild(track.attach());
+    });
+    room.on(LivekitClient.RoomEvent.Disconnected, () => { el('join').disabled = false; el('leave').disabled = true; el('mute').disabled = true; status('LiveKit disconnected.'); });
+    await room.connect(el('url').value.trim(), el('token').value.trim());
+    await room.startAudio();
+    await room.localParticipant.setMicrophoneEnabled(true);
+    muted = false; el('mute').textContent = 'Mute microphone'; el('mute').disabled = false; el('leave').disabled = false;
+    status('Microphone connected. Waiting for boson-avatar video…');
+  } catch (error) { await leave(); status(error.message); }
+};
+el('leave').onclick = leave;
+el('mute').onclick = async () => { try { muted = !muted; await room.localParticipant.setMicrophoneEnabled(!muted); el('mute').textContent = muted ? 'Enable microphone' : 'Mute microphone'; } catch(error) { status(error.message); } };
+</script></body></html>
