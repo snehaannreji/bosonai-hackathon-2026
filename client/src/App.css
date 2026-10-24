@@ -1,0 +1,162 @@
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #f4f5fb;
+  color: #25243a;
+  font-family: Inter, system-ui, Arial, sans-serif;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.app {
+  width: min(820px, 92%);
+  margin: 40px auto;
+}
+
+header {
+  margin-bottom: 24px;
+}
+
+header h1 {
+  margin-bottom: 6px;
+}
+
+header p,
+.muted {
+  color: #6b6b80;
+}
+
+.panel {
+  background: white;
+  border: 1px solid #e6e6ef;
+  border-radius: 14px;
+  padding: 20px;
+  margin-bottom: 18px;
+}
+
+label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #d9d9e6;
+  border-radius: 8px;
+  padding: 12px;
+  outline-color: #6254dc;
+}
+
+.connection {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  flex-wrap: wrap;
+}
+
+button {
+  border: 0;
+  border-radius: 8px;
+  padding: 11px 16px;
+  background: #5546d7;
+  color: white;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button.secondary {
+  background: #ecebf5;
+  color: #33314d;
+}
+
+.chat h2 {
+  margin-top: 0;
+}
+
+.bubble {
+  padding: 12px 15px;
+  margin: 12px 0;
+  border-radius: 12px;
+  overflow-wrap: anywhere;
+}
+
+.bubble p {
+  white-space: pre-wrap;
+  margin-bottom: 0;
+  line-height: 1.5;
+}
+
+.bubble.you {
+  background: #eeecff;
+}
+
+.bubble.student {
+  background: #f0f2f5;
+}
+
+.composer {
+  display: flex;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.composer input {
+  flex: 1;
+}
+
+summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.event-list {
+  max-height: 220px;
+  overflow: auto;
+  font: 12px monospace;
+  color: #55546a;
+}
+
+.understanding-panel {
+  padding: 20px;
+  margin-top: 20px;
+  border: 1px solid #ddd;
+  border-radius: 12px;
+  background: #fff;
+  color: #222;
+}
+
+.understanding-panel h2 {
+  margin-top: 0;
+}
+
+.understanding-section {
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px solid #eee;
+}
+
+.understanding-section h3 {
+  font-size: 1rem;
+  margin-bottom: 8px;
+}
+
+.understanding-section p,
+.understanding-section li {
+  line-height: 1.5;
+  color: #555;
+}
