@@ -6,7 +6,7 @@ import {
   type TranscriptState,
 } from "../state/transcriptStore";
 
-export function TranscriptPanel({ state, topic, studentName = "Alex" }: { state: TranscriptState; topic?: string; studentName?: string }) {
+export function TranscriptPanel({ state, topic, name = "Maya" }: { state: TranscriptState; topic?: string; name?: string }) {
   const items = toList(state);
   const endRef = useRef<HTMLDivElement>(null);
 
@@ -17,7 +17,7 @@ export function TranscriptPanel({ state, topic, studentName = "Alex" }: { state:
   }, [items.length, items[items.length - 1]]);
 
   if (items.length === 0) {
-    return <p className="empty">Your conversation will appear here. {topic ? `Turn on your microphone and teach ${studentName} about ${topic}.` : "Choose a topic and start a lesson."}</p>;
+    return <p className="empty">Your conversation will appear here. {topic ? `Turn on your microphone and teach ${name} about ${topic}.` : "Choose a topic and start a lesson."}</p>;
   }
 
   return (
@@ -32,14 +32,14 @@ export function TranscriptPanel({ state, topic, studentName = "Alex" }: { state:
         </button>
       </div>
       {items.map((item) => (
-        <TurnBubble key={item.itemId} item={item} studentName={studentName} />
+        <TurnBubble key={item.itemId} item={item} name={name} />
       ))}
       <div ref={endRef} />
     </section>
   );
 }
 
-function TurnBubble({ item, studentName = "Alex" }: { item: TranscriptItem; studentName?: string }) {
+function TurnBubble({ item, name }: { item: TranscriptItem; name: string }) {
   if (item.kind === "system") {
     return <div className="turn system">— {item.text} —</div>;
   }
@@ -76,7 +76,7 @@ function TurnBubble({ item, studentName = "Alex" }: { item: TranscriptItem; stud
 
   return (
     <div className={`turn assistant ${item.status}`}>
-      <span className="who">{studentName}</span>
+      <span className="who">{name}</span>
       {item.text}
       {item.status === "streaming" && <span className="caret" />}
       {item.status === "interrupted" && <span className="badge">interrupted</span>}

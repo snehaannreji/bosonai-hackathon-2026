@@ -1,3 +1,5 @@
+import { normalizeStudent, studentName, type StudentSettings } from "./student";
+
 export interface LessonConcept {
   id: string;
   label: string;
@@ -13,6 +15,7 @@ export interface LessonDefinition {
   openingQuestion: string;
   concepts: LessonConcept[];
   mock: boolean;
+  student?: StudentSettings;
 }
 export interface InstructorGuideFact { id: string; text: string; conceptId: string | null; sourceText?: string }
 export interface HumanTurn { id: string; text: string }
@@ -70,9 +73,12 @@ export function normalizeStudentName(value: unknown): string {
   return name;
 }
 
-export function mockLesson(topic: string, familiarity = 0, studentName = "Alex"): LessonDefinition {
-  return { id: `mock-${Date.now()}`, topic: normalizeTopic(topic), familiarity, studentName: normalizeStudentName(studentName), mock: true,
-    openingQuestion: `What would you like me to know about ${topic}?`,
+export function mockLesson(topic: string, studentOrFamiliarity?: StudentSettings | number, studentNameOverride = "Alex"): LessonDefinition {
+  const student = typeof studentOrFamiliarity === "object" ? normalizeStudent(studentOrFamiliarity) : normalizeStudent(undefined);
+  const familiarity = typeof studentOrFamiliarity === "number" ? studentOrFamiliarity : 0;
+  const name = typeof studentOrFamiliarity === "number" ? normalizeStudentName(studentNameOverride) : studentName(student);
+  return { id: `mock-${Date.now()}`, topic: normalizeTopic(topic), familiarity, studentName: name, student, mock: true,
+    openingQuestion: `What is the main idea behind ${topic}?`,
     concepts: [
       { id: "concept_1", label: "The main idea", goal: `Explain what ${topic} means.`, criteria: ["Define the central idea in your own words.", "Explain why it matters."], initialBelief: null },
       { id: "concept_2", label: "How it works", goal: "Explain the mechanism, method, or relationships.", criteria: ["Describe the key parts or steps.", "Explain how the parts connect."], initialBelief: null },

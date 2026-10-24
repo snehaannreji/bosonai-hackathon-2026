@@ -33,6 +33,14 @@ afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 const video = { kind: "video" };
 const open = async (client: LiveAvatarClient) => { await client.connect(); Events.instances[0].emit({ kind: "ready" }); state.rooms[0].handlers.get("track")?.(video, {}, { identity: "boson-avatar" }); };
 describe("integrated Boson talking-avatar client", () => {
+  it("passes the selected account avatar ID through the existing lesson connection", async () => {
+    const client = new LiveAvatarClient(callbacks(), "owned_alex_test", vi.fn());
+    await open(client);
+    expect(fetchMock).toHaveBeenCalledWith("/api/avatar/lessons", expect.objectContaining({
+      body: JSON.stringify({ avatarId: "owned_alex_test" }),
+    }));
+    await client.close();
+  });
   it("opens only after both the agent and real avatar video track are ready", async () => {
     const cb = callbacks(); const onVideo = vi.fn(); const client = new LiveAvatarClient(cb, "builtin_claire_v1", onVideo);
     await client.connect(); Events.instances[0].emit({ kind: "ready" });

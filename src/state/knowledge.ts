@@ -11,7 +11,7 @@ export const LABELS: Record<Concept, string> = {
 };
 export function initialKnowledge(): KnowledgeState {
   return {
-    gradient_direction: { status: "misunderstood", evidence: "Alex thinks the gradient points toward the minimum." },
+    gradient_direction: { status: "misunderstood", evidence: "Maya thinks the gradient points toward the minimum." },
     learning_rate: { status: "unknown", evidence: "No explanation yet." },
     convergence: { status: "unknown", evidence: "No explanation yet." },
   };
@@ -75,6 +75,6 @@ export class KnowledgeTracker {
     if (status === "unknown") return reject("invalid_transition", "Use a new lesson to reset. Unknown cannot overwrite observed evidence.");
     this.state = { ...this.state, [c]: { status: status as Level, evidence: source[1], sourceId: source[0] } };
     this.onChange?.(this.snapshot());
-    return { summary: `${LABELS[c]} is now ${status}. Continue as Alex; do not read the dashboard aloud.`, state: this.snapshot() };
+    return { summary: `${LABELS[c]} is now ${status}. Continue as Maya; do not read the dashboard aloud.`, state: this.snapshot() };
   }
 }

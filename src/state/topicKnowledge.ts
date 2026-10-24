@@ -1,5 +1,6 @@
 import type { KnowledgeState, LearnedFact, ToolResult } from "./knowledge";
 import { CRITERIA_IDS, type EvidenceAssessor, type HumanTurn, type LessonDefinition } from "./lesson";
+import { studentName } from "./student";
 
 const normalize = (value: string) => value.normalize("NFKC").toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 export const isBareConfirmation = (text: string) => /^(?:yes|right|correct|exactly|good job|you understand(?: now)?|you got it|trust me|that is correct|you are correct)(?: (?:yes|right|correct|exactly|now|trust me|that is correct|you understand|you got it))*$/.test(normalize(text));
@@ -22,17 +23,14 @@ const formatLearnedFact = (text: string, questionContext?: string) =>
   questionContext ? `Q: ${questionContext}\nA: ${text.trim()}` : text;
 
 export function initialTopicKnowledge(lesson: LessonDefinition | null): KnowledgeState {
-  if (!lesson) return {};
-  return Object.fromEntries(lesson.concepts.map(concept => {
-    return [concept.id, {
-      status: "unknown",
-      evidence: "No facts taught yet.",
-    }];
-  }));
+  return Object.fromEntries((lesson?.concepts ?? []).map(concept => [concept.id, {
+    status: concept.initialBelief ? "misunderstood" : "unknown",
+    evidence: concept.initialBelief ? `${lesson?.studentName ?? studentName(lesson?.student)}’s starting hunch: ${concept.initialBelief}` : "No facts taught yet.",
+  }]));
 }
 
 /** Concept-independent evidence gates plus a separate, topic-aware assessment.
- * Alex cannot self-award mastery or invent quotes from unobserved human turns. */
+ * The student cannot self-award mastery or invent quotes from unobserved human turns. */
 export class TopicKnowledgeTracker {
   private state: KnowledgeState;
   private turns = new Map<string, { text: string; questionContext?: string }>();
@@ -65,8 +63,8 @@ export class TopicKnowledgeTracker {
       const stateKey = topicFactUpdate ? "taught_facts" : concept.id;
       const current = this.state[stateKey] ?? { status: "unknown" as const, evidence: "No facts taught yet." };
       const answer = normalize(sourceTurn.text);
-      const studentName = this.lesson.studentName ?? "Alex";
-      const belief = `${studentName} asked “${sourceTurn.questionContext}” and the teacher answered “${sourceTurn.text.trim()}.” This is an unverified working belief.`;
+      const name = this.lesson.studentName ?? studentName(this.lesson.student);
+      const belief = `${name} asked “${sourceTurn.questionContext}” and the teacher answered “${sourceTurn.text.trim()}.” This is an unverified working belief.`;
       const fact = makeLearnedFact(`turn:${sourceId}`, `Q: ${sourceTurn.questionContext}\nA: ${sourceTurn.text.trim()}`, "unverified", undefined, { origin: "conversation", sourceId, conceptId: topicFactUpdate ? null : concept.id });
       this.state = {
         ...this.state,
@@ -197,7 +195,7 @@ export class TopicKnowledgeTracker {
       },
     };
     this.onChange?.(this.snapshot());
-    return { summary: `${concept.label} is now ${status}. Continue as Alex, with a short question or teach-back; do not announce the dashboard update.`, state: this.snapshot() };
+    return { summary: `${concept.label} is now ${status}. ${result.reason} Continue as ${this.lesson.studentName ?? studentName(this.lesson.student)}, with a short question or teach-back; do not announce the dashboard update.`, state: this.snapshot() };
   }
 
 }

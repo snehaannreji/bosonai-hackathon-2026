@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type DragEvent } from "react";
 import { decodeAvatarFile, loadAvatarPhoto, removeAvatarPhoto, saveAvatarPhoto, type AvatarPhoto as Photo } from "../state/avatarPhoto";
 
 /** A persistent photo portrait, explicitly distinct from a live video track. */
-export function AvatarPhoto({ studentName = "Alex" }: { studentName?: string }) {
+export function AvatarPhoto({ name = "Maya" }: { name?: string }) {
   const [photo, setPhoto] = useState<Photo | null>(null);
   const [persisted, setPersisted] = useState(false);
   const [url, setUrl] = useState<string | null>(null);
@@ -50,16 +50,17 @@ export function AvatarPhoto({ studentName = "Alex" }: { studentName?: string }) 
   };
   const drop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault(); setDragging(false);
-    if (event.dataTransfer.files.length !== 1) { setError(`Choose one photo for ${studentName}.`); return; }
+    if (event.dataTransfer.files.length !== 1) { setError(`Choose one photo for ${name}.`); return; }
     void choose(event.dataTransfer.files[0]);
   };
 
   return <div className={`photo-avatar ${dragging ? "dragging" : ""}`} onDragOver={e => { e.preventDefault(); if (!busy && !loading) setDragging(true); }} onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false); }} onDrop={drop} aria-busy={busy || loading}>
-    {url ? <figure className="student-photo-frame"><img className="student-photo" src={url} alt={`${studentName}’s uploaded avatar`} /><figcaption>Photo avatar · Not animated</figcaption></figure>
-      : <div className="avatar-orbit"><div className="avatar-initial">a<span>✦</span></div></div>}
-    <input ref={input} className="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp" aria-label={`Upload ${studentName}’s avatar photo`} disabled={busy || loading} onChange={e => void choose(e.target.files?.[0])} />
+    {url ? <figure className="student-photo-frame"><img className="student-photo" src={url} alt={`${name}’s uploaded avatar`} /><figcaption>Photo avatar · Not animated</figcaption></figure>
+      : <div className="avatar-orbit"><div className="avatar-initial">{name[0].toLowerCase()}<span>✦</span></div></div>}
+    <input ref={input} className="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp" aria-label={`Upload ${name}’s avatar photo`} disabled={busy || loading} onChange={e => void choose(e.target.files?.[0])} />
     <div className="photo-actions"><button type="button" disabled={busy || loading} onClick={() => input.current?.click()}>{loading ? "Loading photo…" : busy ? "Saving…" : photo ? "Change photo" : "Upload a photo"}</button>{photo && <button type="button" className="photo-remove" disabled={busy || loading} onClick={() => void remove()}>Remove</button>}</div>
-    <p className="photo-help">{photo ? persisted ? `Saved in this browser. You can keep talking with ${studentName}.` : "Your photo is visible for this visit." : "Or drop a photo here · JPG, PNG or WebP · Up to 10 MB"}</p>
+    <div className="photo-actions"><button type="button" disabled={busy || loading} onClick={() => input.current?.click()}>{loading ? "Loading photo…" : busy ? "Saving…" : photo ? "Change photo" : "Upload a photo"}</button>{photo && <button type="button" className="photo-remove" disabled={busy || loading} onClick={() => void remove()}>Remove</button>}</div>
+    <p className="photo-help">{photo ? persisted ? `Saved in this browser. You can keep talking with ${name}.` : "Your photo is visible for this visit." : "Or drop a photo here · JPG, PNG or WebP · Up to 10 MB"}</p>
     <p className="photo-privacy">Your photo stays in this browser.</p>
     {error && <p className="photo-error" role="alert">{error}</p>}
     {notice && <p className="photo-error" role="status">{notice}</p>}

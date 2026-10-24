@@ -70,7 +70,11 @@ export class LiveAvatarClient {
     });
     try {
       await room.startAudio();
-      const lesson = await post("/api/avatar/lessons", { avatarId: this.avatarId, lessonId: this.cb.lesson?.id, audioRenderer: this.audioRenderer }) as { id: string; url: string; token: string };
+      const lesson = await post("/api/avatar/lessons", {
+        avatarId: this.avatarId,
+        lessonId: this.cb.lesson?.id,
+        ...(this.audioRenderer === "tagged-tts" ? { audioRenderer: this.audioRenderer } : {}),
+      }) as { id: string; url: string; token: string };
       if (generation !== this.generation) { await post(`/api/avatar/lessons/${lesson.id}/end`); return; }
       this.lessonId = lesson.id;
       window.addEventListener("pagehide", this.unload);

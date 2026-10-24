@@ -1,7 +1,8 @@
 import { useRef, useState } from "react";
 import { normalizeInstructorNotes } from "../state/lesson";
+import { LEARNING_LEVELS, STUDENTS, type StudentSettings } from "../state/student";
 
-export function LessonSetup({ topic, onTopic, studentName, onStudentName, notes, onNotesChange, familiarity, onFamiliarity, mockMode = false, disabled, preparing, onStart }: { topic: string; onTopic: (value: string) => void; studentName: string; onStudentName: (value: string) => void; notes: string; onNotesChange: (value: string) => void; familiarity: number; onFamiliarity: (value: number) => void; mockMode?: boolean; disabled: boolean; preparing: boolean; onStart: () => void }) {
+export function LessonSetup({ topic, onTopic, studentName, onStudentName, student, onStudent, notes, onNotesChange, familiarity, onFamiliarity, mockMode = false, disabled, preparing, onStart }: { topic: string; onTopic: (value: string) => void; studentName: string; onStudentName: (value: string) => void; student: StudentSettings; onStudent: (value: StudentSettings) => void; notes: string; onNotesChange: (value: string) => void; familiarity: number; onFamiliarity: (value: number) => void; mockMode?: boolean; disabled: boolean; preparing: boolean; onStart: () => void }) {
   const notesInput = useRef<HTMLInputElement>(null);
   const [notesFileName, setNotesFileName] = useState("");
   const [notesError, setNotesError] = useState("");
@@ -36,6 +37,11 @@ export function LessonSetup({ topic, onTopic, studentName, onStudentName, notes,
       <label htmlFor="lesson-topic">What would you like to teach {studentName}?</label>
       <input id="lesson-topic" value={topic} onChange={event => onTopic(event.target.value)} disabled={disabled} maxLength={160} placeholder="Any topic — photosynthesis, jazz improvisation, your favorite recipe…" aria-describedby="topic-help" autoComplete="off" />
     </form>
+    <div className="student-settings">
+      <div><label htmlFor="student-profile">Student profile</label><select id="student-profile" value={student.id} disabled={disabled} onChange={e => onStudent({ ...student, id: e.target.value as StudentSettings["id"] })}>{Object.entries(STUDENTS).map(([id, profile]) => <option key={id} value={id}>{profile.name}</option>)}</select></div>
+      <div><label htmlFor="student-intelligence">Student intelligence</label><select id="student-intelligence" value={student.level} disabled={disabled} onChange={e => onStudent({ ...student, level: e.target.value as StudentSettings["level"] })}>{Object.entries(LEARNING_LEVELS).map(([id, level]) => <option key={id} value={id}>{level.label}</option>)}</select></div>
+      <p>{LEARNING_LEVELS[student.level].description}</p>
+    </div>
     <label htmlFor="student-name">What should we call your student?</label>
     <input id="student-name" value={studentName} onChange={event => onStudentName(event.target.value)} disabled={disabled} maxLength={40} autoComplete="off" />
     <div className="notes-upload">

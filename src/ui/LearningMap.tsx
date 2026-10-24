@@ -2,12 +2,14 @@ import type { KnowledgeState } from "../state/knowledge";
 import type { InstructorGuideFact, LessonDefinition } from "../state/lesson";
 import type { EmotionDashboardRecord } from "../realtime/emotionDashboard";
 import { EmotionResponsePanel } from "./EmotionResponsePanel";
+import { studentName as getStudentName } from "../state/student";
 const reviewLabels = {
   unverified: "Unverified",
   accurate: "Instructor-verified accurate",
   misconception: "Misconception detected",
 } as const;
-export function LearningMap({ lesson, state, preparing, studentName = "Alex", instructorGuide = [], emotionRecords = [] }: { lesson: LessonDefinition | null; state: KnowledgeState; preparing: boolean; studentName?: string; instructorGuide?: InstructorGuideFact[]; emotionRecords?: EmotionDashboardRecord[] }) {
+export function LearningMap({ lesson, state, preparing, studentName: suppliedName, instructorGuide = [], emotionRecords = [] }: { lesson: LessonDefinition | null; state: KnowledgeState; preparing: boolean; studentName?: string; instructorGuide?: InstructorGuideFact[]; emotionRecords?: EmotionDashboardRecord[] }) {
+  const studentName = suppliedName ?? lesson?.studentName ?? getStudentName(lesson?.student);
   const understood = lesson?.concepts.filter(c => state[c.id]?.status === "understood").length ?? 0;
   const count = lesson?.concepts.length ?? 0;
   const progress = count ? Math.round(understood / count * 100) : 0;

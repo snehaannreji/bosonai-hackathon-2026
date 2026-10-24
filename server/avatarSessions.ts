@@ -7,6 +7,8 @@ import { Router, type Response } from "express";
 import type { LessonService } from "./lessons";
 import type { LessonDefinition } from "../src/state/lesson";
 import { catalogCache } from "../src/realtime/catalogCache";
+import { avatarForStudent, configureAvatarCatalog, parseAvatarCatalog, selectLessonAvatar } from "../src/realtime/avatarCatalog";
+import { normalizeStudent } from "../src/state/student";
 import { AccessToken } from "livekit-server-sdk";
 import { AvatarToolBridge } from "../src/realtime/avatarToolBridge";
 import { buildSessionConfig } from "../src/realtime/sessionConfig";
@@ -65,26 +67,33 @@ export function createAvatarRouter(apiKey: string | undefined, lessonService: Le
   const loadCatalog = catalogCache(async () => {
     const upstream = await fetch(`${base}/v1/avatars`, { headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(15000) });
     if (!upstream.ok) throw new Error(upstream.status === 429 ? "Boson’s avatar catalog is temporarily rate limited. Wait a moment and retry." : `Boson avatar catalog returned ${upstream.status}.`);
-    const data = await upstream.json() as { data?: { avatar_id: string; name: string; is_public: boolean }[] };
-    return (data.data ?? []).filter(a => a.is_public && typeof a.avatar_id === "string").map(a => ({ id: a.avatar_id, name: a.name || a.avatar_id }));
+    return parseAvatarCatalog(await upstream.json());
+  });
+  const availableAvatars = async () => configureAvatarCatalog(await loadCatalog(), process.env.BOSON_AVATAR_ID, {
+    maya: process.env.BOSON_MAYA_AVATAR_ID?.trim() || "",
+    kai: process.env.BOSON_KAI_AVATAR_ID?.trim() || "",
   });
   router.get("/presets", async (_req, res) => {
     if (!apiKey) return res.status(503).json({ error: "Add BOSON_API_KEY to .env first." });
-    try { return res.json({ presets: await loadCatalog() }); }
+    try { return res.json(await availableAvatars()); }
     catch (error) { return res.status(502).json({ error: error instanceof Error ? error.message : "Could not reach Boson’s avatar catalog." }); }
   });
   router.post("/lessons", async (req, res) => {
     const missing = livekitMissing(process.env);
     if (!apiKey || missing.length) return res.status(503).json({ error: `Talking avatars need ${!apiKey ? "BOSON_API_KEY and " : ""}${missing.length ? missing.join(", ") : "LiveKit Cloud settings"} in .env. Restart npm run dev after adding them.` });
     if (!validateLivekitCloudUrl(process.env.LIVEKIT_URL!)) return res.status(400).json({ error: "LIVEKIT_URL must be your wss://project.livekit.cloud URL." });
-    if (lessons.size) return res.status(409).json({ error: "A talking-avatar lesson is already running. End that lesson first." });
-    const avatarId = typeof req.body?.avatarId === "string" ? req.body.avatarId.trim() : "";
-    if (!avatarId || avatarId.length > 256) return res.status(400).json({ error: "Choose a Boson preset avatar." });
     const audioRenderer = req.body?.audioRenderer === "tagged-tts" ? "tagged-tts" : "realtime";
-    const check = spawnSync(python, [resolve("avatar/agent.py"), "--check"], { timeout: 20000, encoding: "utf8" });
-    if (check.status !== 0) return res.status(503).json({ error: "The avatar Python agent is not installed. Run npm run avatar:setup (Python 3.10+), then try again." });
     const definition = typeof req.body?.lessonId === "string" ? lessonService.get(req.body.lessonId) : undefined;
     if (req.body?.lessonId && !definition) return res.status(404).json({ error: "This lesson expired. Start a new lesson." });
+    let catalog;
+    try { catalog = await availableAvatars(); }
+    catch { return res.status(502).json({ error: "Could not verify available avatars with Boson. Retry avatar setup." }); }
+    let avatarId: string;
+    try { avatarId = selectLessonAvatar(catalog, req.body?.avatarId ?? (definition ? avatarForStudent(catalog, normalizeStudent(definition.student)) : undefined)); }
+    catch (error) { return res.status(400).json({ error: error instanceof Error ? error.message : "Choose an available Boson avatar." }); }
+    if (lessons.size) return res.status(409).json({ error: "A talking-avatar lesson is already running. End that lesson first." });
+    const check = spawnSync(python, [resolve("avatar/agent.py"), "--check"], { timeout: 20000, encoding: "utf8" });
+    if (check.status !== 0) return res.status(503).json({ error: "The avatar Python agent is not installed. Run npm run avatar:setup (Python 3.10+), then try again." });
     const id = randomUUID();
     const room = `teachback-${id}`;
     const lesson = { id, room, avatarId, audioRenderer, definition, child: null, listeners: new Set(), history: [], ready: false, ending: false } as unknown as Lesson;
@@ -94,7 +103,7 @@ export function createAvatarRouter(apiKey: string | undefined, lessonService: Le
     try {
       const token = new AccessToken(process.env.LIVEKIT_API_KEY!, process.env.LIVEKIT_API_SECRET!, { identity: "user", ttl: 900 });
       token.addGrant({ roomJoin: true, room, canPublish: true, canSubscribe: true, canPublishData: false });
-      return res.json({ id, url: process.env.LIVEKIT_URL, token: await token.toJwt() });
+      return res.json({ id, avatarId, url: process.env.LIVEKIT_URL, token: await token.toJwt() });
     } catch { await end(lesson); return res.status(500).json({ error: "Could not create a LiveKit room token." }); }
   });
   router.get("/lessons/:id/events", (req, res) => {
