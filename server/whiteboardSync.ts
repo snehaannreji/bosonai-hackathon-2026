@@ -36,9 +36,14 @@ function localAddress(): string | null {
     .filter(item => item.family === "IPv4" && !item.internal)
     .map(item => ({ name, address: item.address })));
   const isPrivateLan = (address: string) => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/u.test(address);
-  return candidates.find(item => (item.name === "en0" || item.name === "en1") && isPrivateLan(item.address))?.address
-    ?? candidates.find(item => isPrivateLan(item.address))?.address
-    ?? candidates.find(item => item.name === "en0" || item.name === "en1")?.address
+  const isWifi = (name: string) => /wi[- ]?fi|wireless|wlan/iu.test(name);
+  const isVirtual = (name: string) => /virtual|vethernet|vpn|loopback|docker|wsl|hyper-v|tailscale|wireguard|vmware|virtualbox|bluetooth|tap|tun|bridge/iu.test(name);
+  const wifi = candidates.filter(item => isWifi(item.name));
+  const physical = candidates.filter(item => !isVirtual(item.name));
+  return wifi.find(item => isPrivateLan(item.address))?.address
+    ?? wifi[0]?.address
+    ?? physical.find(item => isPrivateLan(item.address))?.address
+    ?? physical[0]?.address
     ?? candidates[0]?.address
     ?? null;
 }
