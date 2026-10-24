@@ -27,15 +27,6 @@ Use headphones to minimize echo. Microphone access needs localhost or HTTPS. Chr
 
 **No key?** Run the same commands, choose **Local mock (text only)**, then **Start lesson**. Enter a topic and type an explanation. This deterministic fixture uses transcript grounding and simulated assessments, but has **no microphone, no speech, no live AI and no avatar**. It never silently replaces a failed Boson connection.
 
-The current development session used a temporary Node binary because Node was absent from the shell. Until that temporary directory is cleared, this machine can use:
-
-```bash
-export PATH="/private/tmp/node-v22.22.0-darwin-arm64/bin:$PATH"
-npm run dev
-```
-
-A regular Node installation is preferable for ongoing team work.
-
 ## Realtime 1.5 early access (team priority)
 
 The team-provided **Boson-Opening-2026.pdf**, slides 7 and 17, gives the exact model ID: **`higgs-realtime-1.5-preview`**. A credentialed smoke test accepted that ID, the server reported it in `session.created`, and Alex returned real speech. The app now defaults to this exact preview ID; it does not silently fall back to `higgs-realtime`.
@@ -131,7 +122,7 @@ npm run avatar:setup
 npm run dev
 ```
 
-The setup command selects an installed Python 3.10+ and installs Boson's official-example dependencies into `.venv-avatar`. To select an interpreter explicitly, use `AVATAR_SETUP_PYTHON=/path/to/python3.10 npm run avatar:setup`. These dependencies are already installed on the current development machine. Restart the running dev command after editing `.env`.
+The setup command selects an installed Python 3.10+ and installs Boson's official-example dependencies into `.venv-avatar`. On Windows it supports the Python launcher (`py`) and creates a Windows virtual environment; no WSL or Bash is needed. To select an interpreter explicitly, set `AVATAR_SETUP_PYTHON` to its executable path before running the setup command. Restart the running dev command after editing `.env`.
 
 Open http://localhost:5173, enter your topic, choose **Boson talking avatar**, choose a **Student avatar**, click **Start lesson**, wait for the real video track, then **Start microphone**. There is no separate Python command or token copying for the main classroom: the Node server starts and stops the official-example-derived bridge automatically. Voice-only use remains available as **Boson voice + photo** while LiveKit is being configured.
 
@@ -147,7 +138,7 @@ npm run test:avatar  # after npm run avatar:setup
 npm run typecheck
 npm run build
 npm run avatar:config
-python3 -m py_compile avatar/agent.py
+npm run avatar:check
 ```
 
 Tests cover arbitrary-topic prompts/tool schemas, independent-assessment gates, Unicode evidence, confirmation rejection, gradual learning, stale-result rejection, cross-topic isolation, local mock lessons, the upstream transcript/resampler, and connection/tool/interruption behavior. They do not prove live API access, speech quality, or lip synchronization.

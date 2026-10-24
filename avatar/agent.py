@@ -8,6 +8,7 @@ import json
 import os
 import signal
 import sys
+import threading
 from datetime import timedelta
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
@@ -38,6 +39,21 @@ def report(kind, **values):
     print(json.dumps({"kind": kind, **values}), flush=True)
 
 
+def install_stop_handlers(loop, stop):
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, stop.set)
+        except NotImplementedError:
+            signal.signal(sig, lambda _signum, _frame: loop.call_soon_threadsafe(stop.set))
+
+
+async def send_microphone_frame(ws, frame, avatar_speaking):
+    if avatar_speaking:
+        return
+    audio = base64.b64encode(bytes(frame.data)).decode()
+    await ws.send(json.dumps({"type": "input_audio_buffer.append", "audio": audio}))
+
+
 def livekit_token(identity, *, publish, subscribe, publish_on_behalf=None):
     token = (api.AccessToken(os.environ["LIVEKIT_API_KEY"], os.environ["LIVEKIT_API_SECRET"])
              .with_identity(identity)
@@ -61,8 +77,7 @@ async def main():
     realtime_url = urlunsplit(endpoint._replace(query=urlencode(query)))
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, stop.set)
+    install_stop_handlers(loop, stop)
     room = rtc.Room()
     session_id = None
     tasks = set()
@@ -118,7 +133,7 @@ async def main():
                 stream = rtc.AudioStream(track, sample_rate=24000, num_channels=1)
                 try:
                     async for event in stream:
-                        await ws.send(json.dumps({"type": "input_audio_buffer.append", "audio": base64.b64encode(bytes(event.frame.data)).decode()}))
+                        await send_microphone_frame(ws, event.frame, speaking)
                 except websockets.ConnectionClosed: pass
                 finally:
                     await stream.aclose()
@@ -137,16 +152,20 @@ async def main():
                     if publication.track is not None: track_subscribed(publication.track, publication, participant)
 
             async def commands():
-                reader = asyncio.StreamReader()
-                transport, _ = await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(reader), sys.stdin)
-                try:
-                    while line := await reader.readline():
-                        try:
-                            command = json.loads(line)
-                            if command.get("kind") == "send": await ws.send(json.dumps(command["event"]))
-                        except (ValueError, KeyError): pass
-                    stop.set()
-                finally: transport.close()
+                lines = asyncio.Queue()
+
+                def read_stdin():
+                    for line in sys.stdin:
+                        loop.call_soon_threadsafe(lines.put_nowait, line)
+                    loop.call_soon_threadsafe(lines.put_nowait, None)
+
+                threading.Thread(target=read_stdin, daemon=True).start()
+                while (line := await lines.get()) is not None:
+                    try:
+                        command = json.loads(line)
+                        if command.get("kind") == "send": await ws.send(json.dumps(command["event"]))
+                    except (ValueError, KeyError): pass
+                stop.set()
 
             async def receive():
                 nonlocal current_item, speaking, truncate_item

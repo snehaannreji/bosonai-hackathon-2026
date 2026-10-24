@@ -37,6 +37,7 @@ export default function App() {
   const [transcript, setTranscript] = useState<TranscriptState>(emptyTranscript);
   const [knowledge, setKnowledge] = useState<KnowledgeState>({});
   const [topic, setTopic] = useState("");
+  const [familiarity, setFamiliarity] = useState(0);
   const [lesson, setLesson] = useState<LessonDefinition | null>(null);
   const [preparing, setPreparing] = useState(false);
   const startupVersion = useRef(0);
@@ -87,7 +88,7 @@ export default function App() {
     try {
       if (client.current) await client.current.close();
       if (version !== startupVersion.current) return;
-      const prepared = await prepareLesson(topic, mode === "mock", abort.signal);
+      const prepared = await prepareLesson(topic, mode === "mock", familiarity, abort.signal);
       if (version !== startupVersion.current) return;
       setLesson(prepared); setKnowledge(initialTopicKnowledge(prepared)); setTranscript(emptyTranscript); setLog([]);
       const callbacks: RealtimeCallbacks = {
@@ -126,7 +127,7 @@ export default function App() {
   return <main className="app">
     <header className="topbar"><a className="brand" href="/"><span className="brand-mark">hı</span> HUMAN INTELLIGENCE</a><span className="project-tag">BOSON AI HACKATHON / 2026</span></header>
     <section className="intro"><div><p className="eyebrow">LEARN BY EXPLAINING</p><h1>A little teaching.<br /><em>A deeper understanding.</em></h1><p className="lede">Meet Alex, your AI student. Make a tricky idea click by explaining it in your own words.</p></div><div className="lesson-tag"><span>YOUR CLASSROOM</span><strong>{lesson?.topic || topic.trim() || "Your next lesson"}</strong><span>Any topic. Your explanation.</span></div></section>
-    <LessonSetup topic={topic} onTopic={setTopic} disabled={busy} preparing={preparing} onStart={() => void start()} />
+    <LessonSetup topic={topic} onTopic={setTopic} familiarity={familiarity} onFamiliarity={setFamiliarity} disabled={busy} preparing={preparing} onStart={() => void start()} />
     <div className="workspace">
       <section className="conversation-card" aria-label="Conversation with Alex">
         <div className="card-head"><div><span className={`dot ${connected ? "dot-open" : ""}`} /><strong>Alex</strong><span className="subtle">Your curious student</span></div><span className="pill">{mode === "avatar" ? "HIGGS AVATAR + REALTIME" : mode === "mock" ? "LOCAL MOCK · TEXT ONLY" : "HIGGS REALTIME"}</span></div>
@@ -146,7 +147,7 @@ export default function App() {
         <div className={`student-stage ${activity === "speaking" ? "speaking" : ""}`}>
           <div className="stage-label">{mode === "avatar" ? "LIVE AVATAR CLASSROOM" : mode === "mock" ? "UI DEVELOPMENT MODE" : "VOICE CLASSROOM"}</div>
           {mode === "avatar" ? <LiveAvatarVideo track={videoTrack} connecting={connection === "connecting"} /> : <AvatarPhoto />}
-          <h2>Let’s figure it out together.</h2><p>{connected ? (mode === "mock" ? "Type an explanation below to try the learning flow." : activity === "speaking" ? "Alex is speaking… You can interrupt." : activity === "thinking" ? "Alex is thinking…" : micActive ? "Alex is listening. Go ahead." : "Turn on your microphone and say hello.") : preparing ? "Getting ready to learn your topic…" : lesson?.openingQuestion ?? "Choose a topic and help Alex make sense of it."}</p>
+          <h2>Let’s figure it out together.</h2><p>{connected ? (mode === "mock" ? "Type an explanation below to try the learning flow." : activity === "speaking" ? mode === "avatar" ? "Alex is speaking… Wait until Alex finishes, then respond." : "Alex is speaking… You can interrupt." : activity === "thinking" ? "Alex is thinking…" : micActive ? "Alex is listening. Go ahead." : "Turn on your microphone and say hello.") : preparing ? "Getting ready to learn your topic…" : lesson?.openingQuestion ?? "Choose a topic and help Alex make sense of it."}</p>
           <div className="avatar-note">{mode === "avatar" ? "Boson renders the face and speech together in LiveKit." : "Photo mode · Live animation is available in Boson talking avatar mode."}</div>
         </div>
         <div className="transcript-wrap" aria-label="Conversation transcript"><TranscriptPanel state={transcript} topic={lesson?.topic} /></div>

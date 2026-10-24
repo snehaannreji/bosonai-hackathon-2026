@@ -3,7 +3,7 @@ import type { EvidenceAssessor, LessonDefinition } from "./lesson";
 import { TopicKnowledgeTracker, mockAssessor } from "./topicKnowledge";
 export interface KnowledgeContext {
   snapshot(): KnowledgeState;
-  observeHuman(id: string, text: string): void;
+  observeHuman(id: string, text: string, questionContext?: string): void;
   reset(): void;
   update(args: Record<string, unknown>): ToolResult | Promise<ToolResult>;
 }

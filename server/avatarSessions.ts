@@ -31,7 +31,11 @@ export function createAvatarRouter(apiKey: string | undefined, lessonService: Le
   const lessons = new Map<string, Lesson>();
   const base = (process.env.BOSON_BASE_URL ?? "https://api.boson.ai").replace(/\/$/, "");
   const settings = readRealtimeSettings(process.env);
-  const python = process.env.AVATAR_PYTHON || resolve(".venv-avatar/bin/python");
+  const python = process.env.AVATAR_PYTHON || resolve(
+    ".venv-avatar",
+    process.platform === "win32" ? "Scripts" : "bin",
+    process.platform === "win32" ? "python.exe" : "python",
+  );
   const publish = (lesson: Lesson, message: StreamMessage) => {
     lesson.history.push(message); if (lesson.history.length > 250) lesson.history.shift();
     for (const res of lesson.listeners) res.write(`data: ${JSON.stringify(message)}\n\n`);

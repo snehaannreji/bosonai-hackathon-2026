@@ -34,6 +34,69 @@ describe("avatar server learning bridge", async () => {
     await vi.waitFor(() => expect(cb.send).toHaveBeenCalledTimes(1));
     expect(cb.send.mock.calls[0][0].type).toBe("conversation.item.create");
   });
+  it("increases playful frustration with consecutive failed updates and resets it on progress", async () => {
+    const cb = { onEvent: vi.fn(), onKnowledge: vi.fn(), send: vi.fn() };
+    const bridge = new AvatarToolBridge(cb);
+    const failed = (callId: string) => ({
+      ...call,
+      call_id: callId,
+      arguments: JSON.stringify({ concept: "gradient_direction", evidence: "not in a human turn" }),
+    });
+    const getFeedback = (callId: string) => {
+      const event = cb.send.mock.calls.find(([sent]) =>
+        sent.type === "conversation.item.create" && sent.item.call_id === callId,
+      )?.[0];
+      return JSON.parse(event.item.output).frustration;
+    };
+    for (const [index, level] of [1, 2, 3, 4, 4].entries()) {
+      bridge.handle(failed(`failed-${index}`));
+      bridge.handle({ type: "response.done", response: { status: "completed" } });
+      await vi.waitFor(() => expect(cb.send).toHaveBeenCalledTimes((index + 1) * 2));
+      expect(getFeedback(`failed-${index}`).level).toBe(level);
+      expect(getFeedback(`failed-${index}`).guidance).toContain("angry");
+      expect(getFeedback(`failed-${index}`).guidance).toContain("Do not threaten, demean, or use slurs");
+    }
+    bridge.observeText("u1", evidence);
+    bridge.handle({ ...call, call_id: "success", arguments: JSON.stringify({ concept: "gradient_direction", evidence }) });
+    bridge.handle({ type: "response.done", response: { status: "completed" } });
+    await vi.waitFor(() => expect(cb.send).toHaveBeenCalledTimes(12));
+    expect(getFeedback("success").level).toBe(0);
+  });
+  it("attaches Alex's last question to a yes/no answer and updates the concept belief", async () => {
+    const { mockLesson } = await import("../src/state/lesson");
+    const lesson = { ...mockLesson("Map symbols"), familiarity: 0, mock: false };
+    const assess = vi.fn(async () => ({ matchedCriteria: [], misconception: false, reason: "" }));
+    const cb = { onEvent: vi.fn(), onKnowledge: vi.fn(), send: vi.fn() };
+    const bridge = new AvatarToolBridge(cb, lesson, assess);
+    bridge.handle({
+      type: "response.output_audio_transcript.done",
+      transcript: "Does the blue line on this map indicate a river?",
+    });
+    bridge.handle({
+      type: "conversation.item.input_audio_transcription.completed",
+      item_id: "u-yes",
+      transcript: "yes",
+    });
+    const yesCall = {
+      ...call,
+      call_id: "yes-call",
+      arguments: JSON.stringify({ concept: "concept_2", evidence: "yes" }),
+    };
+    bridge.handle(yesCall);
+    bridge.handle({ type: "response.done", response: { status: "completed" } });
+    await vi.waitFor(() => expect(cb.onKnowledge).toHaveBeenCalled());
+    expect(cb.onKnowledge).toHaveBeenLastCalledWith(expect.objectContaining({
+      concept_2: expect.objectContaining({
+        evidence: "yes",
+        belief: expect.stringContaining("Does the blue line on this map indicate a river?"),
+      }),
+    }));
+    expect(cb.onEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: "conversation.item.input_audio_transcription.completed",
+      transcript: "yes",
+    }));
+    expect(assess).not.toHaveBeenCalled();
+  });
 });
 
 it("does not start delayed assessment speech over a new human turn in an arbitrary-topic avatar lesson", async () => {

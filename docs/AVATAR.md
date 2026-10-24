@@ -29,15 +29,16 @@ npm run avatar:setup
 npm run dev
 ```
 
-`avatar:setup` installs the pinned SDKs into `.venv-avatar`. If needed, select Python explicitly:
+`avatar:setup` installs the pinned SDKs into `.venv-avatar`. On Windows, it uses the Python launcher (`py`) when available and creates `.venv-avatar\Scripts\python.exe`; no WSL or Bash is required. To select a Python interpreter explicitly in PowerShell:
 
-```bash
-AVATAR_SETUP_PYTHON=/path/to/python3.10 npm run avatar:setup
+```powershell
+$env:AVATAR_SETUP_PYTHON = "C:\Path\To\Python310\python.exe"
+npm run avatar:setup
 ```
 
-On the current machine, the compatible temporary Node runtime is `/private/tmp/node-v22.22.0-darwin-arm64/bin`; add it to PATH if Node is not installed normally. The avatar dependencies have already been installed using `/opt/homebrew/bin/python3.10`.
+Restart `npm run dev` after editing `.env`. Open **http://localhost:5173**, enter a topic, choose **Boson talking avatar**, select a **Student avatar**, and click **Start lesson**. Enable the microphone once the connection and actual video track are ready. Let Alex finish speaking before responding; microphone audio is not forwarded during avatar playback, which prevents speaker echo from triggering another response. Check that the transcript and understanding map update. Use **End lesson** when finished.
 
-Restart `npm run dev` after editing `.env`. Open **http://localhost:5173**, enter a topic, choose **Boson talking avatar**, select a **Student avatar**, and click **Start lesson**. Enable the microphone once the connection and actual video track are ready. Talk to Alex, interrupt mid-sentence, and check that both the mouth and voice stop together. Check that the transcript and understanding map update. Use **End lesson** when finished.
+Before starting, use **Alex’s starting understanding** to choose how familiar Alex is with the topic: 0% begins with no understanding, 100% begins understanding all lesson concepts, and values between them set partial familiarity. This is a simulation setting shown on the learning map, not independently assessed evidence; subsequent learning updates still require evidence from the teacher.
 
 Do not run `python avatar/agent.py` separately for this path. The Node server starts a managed bridge for the room and mints the browser token automatically. The current local demo allows one active avatar lesson at a time; an existing lesson must finish cleanup before another starts.
 
@@ -57,7 +58,11 @@ Python --protocol events--> Node evidence validator --SSE--> React transcript/ma
 - `src/realtime/avatarToolBridge.ts` uses the same topic-specific tracker and independent evidence checks as voice mode, grounds evidence in actual human turns, deduplicates tool call IDs, and sends one continuation per response batch. State/transcripts flow to the existing React interface.
 - `src/ui/LiveAvatarVideo.tsx` shows an actual remote video track, or a clearly labeled waiting state. Connection becomes usable only after the voice agent and video track are both present.
 
-Each lesson has its own room. Only the `user` microphone is forwarded; the avatar listens only to the `agent` participant. Boson renders the face and voice together. `playback_finished` supplies the played duration when interrupted, so the worker truncates conversation history to match what was heard.
+Each lesson has its own room. Only the `user` microphone is forwarded; mic frames are paused during avatar playback to prevent speaker echo from being mistaken for another user turn. The avatar listens only to the `agent` participant. Boson renders the face and voice together. `playback_finished` supplies the played duration, so the worker truncates conversation history to match what was heard.
+
+When a learning update fails, Alex receives a per-lesson anger level that rises with consecutive failures and resets after progress. Alex can sound sharply angry at an explanation that is not helping and demand a different approach; the roleplay does not include threats, demeaning personal attacks, or slurs.
+
+Short yes/no answers to Alex's direct questions are paired with Alex's immediately preceding spoken question and recorded as unverified beliefs on the relevant concept. At low starting familiarity, longer teacher claims can also be retained as working beliefs even when the independent assessment flags a misconception; beliefs remain visibly separate from verified understanding.
 
 Ending a lesson, closing the tab, losing the event stream, leaving the room, or reaching the 10-minute cap initiates cleanup. The worker releases the Boson session in `finally`; the Node server also attempts a backup release. Session creation is not automatically retried, because it is not idempotent. A cancellation during creation waits for the pending request to finish so the returned session can be released.
 
@@ -74,7 +79,7 @@ Optional server-only overrides:
 BOSON_REALTIME_MODEL=higgs-realtime-1.5-preview
 BOSON_REALTIME_URL=wss://api.boson.ai/v1/realtime
 # Path to a prepared Python environment, if not the default:
-# AVATAR_PYTHON=/absolute/path/to/python
+# AVATAR_PYTHON=C:\Path\To\Python310\python.exe
 ```
 
 The main classroom loads its session config directly from TypeScript at startup. It does not require `npm run avatar:config`; that export is only for standalone diagnostics.

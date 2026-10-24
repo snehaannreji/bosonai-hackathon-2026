@@ -5,6 +5,7 @@ import contextlib
 import io
 import json
 import os
+import signal
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -65,6 +66,27 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
     async def run_main(self):
         with patch.object(asyncio.get_running_loop(), "add_signal_handler"):
             await agent.main()
+    async def test_windows_signal_handlers_fall_back_to_signal_module(self):
+        loop = asyncio.get_running_loop()
+        stop = asyncio.Event()
+        handlers = []
+        with patch.object(loop, "add_signal_handler", side_effect=NotImplementedError), \
+             patch.object(agent.signal, "signal", side_effect=lambda _sig, handler: handlers.append(handler)):
+            agent.install_stop_handlers(loop, stop)
+        self.assertEqual(len(handlers), 2)
+        handlers[0](signal.SIGINT, None)
+        await asyncio.sleep(0)
+        self.assertTrue(stop.is_set())
+    async def test_microphone_audio_is_not_forwarded_while_avatar_speaks(self):
+        ws = SimpleNamespace(send=AsyncMock())
+        frame = SimpleNamespace(data=b"\x01\x02")
+        await agent.send_microphone_frame(ws, frame, avatar_speaking=True)
+        ws.send.assert_not_awaited()
+        await agent.send_microphone_frame(ws, frame, avatar_speaking=False)
+        ws.send.assert_awaited_once_with(json.dumps({
+            "type": "input_audio_buffer.append",
+            "audio": base64.b64encode(frame.data).decode(),
+        }))
     async def test_releases_created_avatar_even_when_room_connection_fails(self):
         self.room.connect.side_effect = RuntimeError("room refused")
         with self.assertRaises(RuntimeError): await self.run_main()

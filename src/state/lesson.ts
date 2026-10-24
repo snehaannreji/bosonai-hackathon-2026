@@ -8,6 +8,7 @@ export interface LessonConcept {
 export interface LessonDefinition {
   id: string;
   topic: string;
+  familiarity: number;
   openingQuestion: string;
   concepts: LessonConcept[];
   mock: boolean;
@@ -24,8 +25,8 @@ export function normalizeTopic(value: unknown): string {
   return topic;
 }
 
-export function mockLesson(topic: string): LessonDefinition {
-  return { id: `mock-${Date.now()}`, topic: normalizeTopic(topic), mock: true,
+export function mockLesson(topic: string, familiarity = 0): LessonDefinition {
+  return { id: `mock-${Date.now()}`, topic: normalizeTopic(topic), familiarity, mock: true,
     openingQuestion: `What is the main idea behind ${topic}?`,
     concepts: [
       { id: "concept_1", label: "The main idea", goal: `Explain what ${topic} means.`, criteria: ["Define the central idea in your own words.", "Explain why it matters."], initialBelief: null },

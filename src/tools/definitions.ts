@@ -15,7 +15,7 @@ export const TOOL_DEFINITIONS = [{
 
 export function lessonToolDefinitions(concepts: { id: string; label: string }[]) {
   return [{ type: "function", name: "update_understanding",
-    description: "Call after the human explains a lesson concept. Quote their exact words. An independent evidence check decides the learning state; do not choose a status yourself. Reassurance alone is not evidence. If rejected, ask a natural follow-up rather than looping. Do not announce tool calls or read results aloud.",
+    description: "Call after the human explains a lesson concept or answers your direct question with yes/no. Quote their exact words. For yes/no, the app attaches your last question and stores the answer as an unverified belief, not full understanding. The independent evidence check decides explanation learning state; do not choose a status yourself. Do not announce tool calls or read results aloud.",
     parameters: { type: "object", properties: {
       concept: { type: "string", enum: concepts.map(c => c.id), description: concepts.map(c => `${c.id}: ${c.label}`).join("; ") },
       evidence: { type: "string", description: "A verbatim quote from the human's explanation." },

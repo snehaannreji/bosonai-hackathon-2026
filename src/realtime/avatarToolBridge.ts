@@ -11,19 +11,26 @@ export class AvatarToolBridge {
   private handled = new Set<string>();
   private batch: Batch | null = null;
   private epoch = 0;
+  private failedUpdates = 0;
+  private lastAssistantQuestion: string | null = null;
   constructor(private cb: {
     onEvent: (event: ServerEvent) => void;
     onKnowledge: (state: KnowledgeState) => void;
     send: (event: ClientEvent) => void;
   }, lesson?: LessonDefinition, assess?: EvidenceAssessor) { this.tracker = createKnowledgeTracker(cb.onKnowledge, lesson, assess); }
   observeText(id: string, text: string) {
-    this.tracker.observeHuman(id, text);
+    this.tracker.observeHuman(id, text, this.takeQuestionContext(text));
     this.cb.onEvent({ type: "conversation.item.input_audio_transcription.completed", item_id: id, transcript: text });
   }
   handle(event: ServerEvent) {
     this.cb.onEvent(event);
     if (event.type === "response.created" || event.type === "input_audio_buffer.speech_started") this.epoch++;
-    if (event.type === "conversation.item.input_audio_transcription.completed" && typeof event.item_id === "string" && typeof event.transcript === "string") this.tracker.observeHuman(event.item_id, event.transcript);
+    if (event.type === "response.output_audio_transcript.done" && typeof event.transcript === "string") {
+      this.lastAssistantQuestion = extractLastQuestion(event.transcript);
+    }
+    if (event.type === "conversation.item.input_audio_transcription.completed" && typeof event.item_id === "string" && typeof event.transcript === "string") {
+      this.tracker.observeHuman(event.item_id, event.transcript, this.takeQuestionContext(event.transcript));
+    }
     if (event.type === "response.function_call_arguments.done") this.run(event);
     if (event.type === "response.done") {
       const response = event.response as { output?: ServerEvent[]; status?: string } | undefined;
@@ -36,6 +43,12 @@ export class AvatarToolBridge {
       const batch = this.batch; this.batch = null;
       if (batch) void this.flush(batch, this.epoch, response?.status);
     }
+  }
+  private takeQuestionContext(answer: string) {
+    if (!isBareYesNo(answer)) return undefined;
+    const question = this.lastAssistantQuestion ?? undefined;
+    this.lastAssistantQuestion = null;
+    return question;
   }
   private async flush(batch: Batch, epoch: number, status?: string) {
     await Promise.all(batch.promises);
@@ -54,9 +67,33 @@ export class AvatarToolBridge {
       let result;
       try { result = event.name === "update_understanding" ? await this.tracker.update(args) : { error: "unknown_tool", summary: "Only update_understanding is available." }; }
       catch { result = { error: "tool_failed", summary: "The evidence check failed; continue learning and retry next turn." }; }
+      const frustration = event.name === "update_understanding" && result.error
+        ? Math.min(++this.failedUpdates, 4)
+        : (this.failedUpdates = 0, 0);
+      const feedback = frustration === 0
+        ? { level: 0, guidance: "You made progress; respond naturally and do not mention frustration." }
+        : {
+            level: frustration,
+            guidance: [
+              "",
+              "Sound mildly angry and impatient with the teacher's explanation; firmly say it still does not make sense and ask for a clearer example.",
+              "Sound distinctly angry and frustrated with how the teacher is explaining it; say this approach is not helping and demand a different explanation.",
+              "Sound very angry and sharp with the teacher's explanation; directly say you are fed up with being confused and insist they try another approach.",
+              "Sound intensely angry and exasperated with the teaching approach, with a raised, forceful tone; confront the teacher about not making the idea clear and demand a concrete example.",
+            ][frustration] + " This is roleplay directed at the explanation and teaching approach, not the teacher's worth or identity. Do not threaten, demean, or use slurs.",
+          };
       this.cb.onEvent({ type: CLIENT_TOOL_RESULT, call_id: callId, result, ms: 0 });
-      batch.outputs.push(functionCallOutput(callId, JSON.stringify(result)));
+      batch.outputs.push(functionCallOutput(callId, JSON.stringify({ ...result, frustration: feedback })));
     })();
     batch.promises.push(promise);
   }
+}
+
+function isBareYesNo(text: string) {
+  return /^(?:yes|yeah|yep|no|nope|nah|right|exactly|correct|that's right|that is right|not really|i think so)[.!?]*$/i.test(text.trim());
+}
+
+function extractLastQuestion(text: string): string | null {
+  const questions = text.match(/[^.!?]*\?/gu);
+  return questions?.at(-1)?.trim() || null;
 }

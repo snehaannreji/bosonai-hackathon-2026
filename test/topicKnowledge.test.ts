@@ -18,9 +18,68 @@ describe("arbitrary-topic lesson state", () => {
   it("builds the student's prompt and tool enum from the selected lesson only", () => {
     const prompt = studentPrompt(lesson);
     expect(prompt).toContain("Photosynthesis"); expect(prompt).not.toContain("gradient");
+    expect(prompt).toContain("sound increasingly angry and impatient with each consecutive failed update");
+    expect(prompt).toContain("sound increasingly angry and impatient");
+    expect(prompt).toContain("Direct the anger at the teacher's explanation or teaching approach");
+    expect(prompt).toContain("Do not threaten, demean, or use slurs");
+    expect(prompt).toContain("Do not claim you learned it unless the tool confirms progress");
     const config = buildSessionConfig("model-fixture", lesson).session as { tools: { parameters: { properties: { concept: { enum: string[] } } } }[] };
     expect(config.tools[0].parameters.properties.concept.enum).toEqual(lesson.concepts.map(c => c.id));
     expect(Object.keys(initialTopicKnowledge(lesson))).toEqual(["concept_1", "concept_2", "concept_3"]);
+  });
+  it("sets the starting knowledge map from the chosen familiarity without treating it as evidence", () => {
+    const noFamiliarity = { ...lesson, familiarity: 0 };
+    const someFamiliarity = { ...lesson, familiarity: 50 };
+    const fullFamiliarity = { ...lesson, familiarity: 100 };
+    expect(initialTopicKnowledge(noFamiliarity).concept_1).toMatchObject({ status: "unknown" });
+    expect(initialTopicKnowledge(someFamiliarity).concept_1).toMatchObject({ status: "partial", evidence: expect.stringContaining("not independently assessed") });
+    expect(initialTopicKnowledge(fullFamiliarity).concept_1).toMatchObject({ status: "understood", evidence: expect.stringContaining("100%") });
+  });
+  it("records a yes/no reply against Alex's immediately preceding question as an unverified belief", async () => {
+    const assess = vi.fn(async () => accepted);
+    const tracker = new TopicKnowledgeTracker({ ...lesson, familiarity: 0 }, assess);
+    tracker.observeHuman("u1", "yes", "Does the blue line represent a river?");
+    const result = await tracker.update({ concept: "concept_2", evidence: "yes" });
+    expect(result.error).toBeUndefined();
+    expect(result.state?.concept_2).toMatchObject({
+      status: "unknown",
+      evidence: "yes",
+      belief: expect.stringContaining("Does the blue line represent a river?"),
+    });
+    expect(assess).not.toHaveBeenCalled();
+  });
+  it("does not treat an out-of-context yes/no as learning evidence", async () => {
+    const assess = vi.fn(async () => accepted);
+    const tracker = new TopicKnowledgeTracker(lesson, assess);
+    tracker.observeHuman("u1", "no");
+    expect((await tracker.update({ concept: "concept_1", evidence: "no" })).error).toBe("ungrounded_evidence");
+    expect(assess).not.toHaveBeenCalled();
+  });
+  it("keeps a novice's incorrect teacher claim as an unverified belief while retaining the misconception result", async () => {
+    const claim = "Blue lines on every map always mean rivers.";
+    const tracker = new TopicKnowledgeTracker({ ...lesson, familiarity: 0 }, async () => ({
+      matchedCriteria: [],
+      misconception: true,
+      reason: "The claim is too broad.",
+    }));
+    tracker.observeHuman("u1", claim);
+    const result = await tracker.update({ concept: "concept_1", evidence: claim });
+    expect(result.state?.concept_1).toMatchObject({
+      status: "misunderstood",
+      belief: expect.stringContaining(claim),
+    });
+  });
+  it("keeps a novice's claim as a belief even when it does not yet meet a learning criterion", async () => {
+    const claim = "A map scale is just a decorative line.";
+    const tracker = new TopicKnowledgeTracker({ ...lesson, familiarity: 0 }, async () => ({
+      matchedCriteria: [],
+      misconception: false,
+      reason: "No criteria demonstrated yet.",
+    }));
+    tracker.observeHuman("u1", claim);
+    const result = await tracker.update({ concept: "concept_1", evidence: claim });
+    expect(result.error).toBe("insufficient_evidence");
+    expect(result.state?.concept_1.belief).toContain(claim);
   });
   it("requires actual observed human evidence before calling the independent assessor", async () => {
     const assess = vi.fn(async (_input: Parameters<EvidenceAssessor>[0]) => accepted); const tracker = new TopicKnowledgeTracker(lesson, assess);
