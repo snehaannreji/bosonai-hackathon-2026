@@ -1,7 +1,7 @@
 import type { EmotionDashboardRecord } from "../realtime/emotionDashboard";
 
 export function EmotionResponsePanel({ records }: { records: EmotionDashboardRecord[] }) {
-  return <section className="instructor-guide emotion-response" aria-label="Student emotion and teacher response" aria-live="polite">
+  return <section className="learning-state-panel instructor-guide emotion-response" aria-label="Student emotion and teacher response" aria-live="polite">
     <h3>Emotion &amp; teacher response</h3>
     <p className="subtle">Anger and sadness expressed by the student, and whether the next teacher response acknowledged the emotion.</p>
     {records.length ? <ol>{records.map(record => <li key={record.id}>

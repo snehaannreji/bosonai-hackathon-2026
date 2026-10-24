@@ -74,7 +74,6 @@ export default function App() {
   const emotionRecords = useMemo(() => emotionDashboardRecords(emotionLog), [emotionLog]);
   const selectedFace = presets.find(face => face.id === avatarId);
   const studentAppearance = catalogRef.current ? studentAvatarSelection(catalogRef.current, student) : null;
-  const startingHunch = lesson?.concepts.find(concept => concept.initialBelief)?.initialBelief;
   const changeStudent = (next: StudentSettings) => {
     if (busy) return;
     if (catalogRef.current && next.id !== student.id) setAvatarId(avatarForStudent(catalogRef.current, next));
@@ -196,7 +195,6 @@ export default function App() {
       </section>
       <aside className="sidebar">
         <LearningMap lesson={lesson} state={knowledge} preparing={preparing} studentName={name} instructorGuide={instructorGuide} emotionRecords={emotionRecords} />
-        <section className="hint-card"><span className="spark">✳</span><p className="eyebrow">{startingHunch ? `${name.toUpperCase()}’S STARTING HUNCH` : "A PLACE TO START"}</p><h3>{startingHunch ? `“${startingHunch}”` : lesson?.openingQuestion ?? "What would you like your student to learn?"}</h3><p>{startingHunch ? `Help ${name} reason through this idea. Explain why, then try an example together.` : `${name} starts with a blank knowledge state and follows the facts you choose to teach, rather than a preset concept sequence.`}</p><div className="hint-divider" /><p className="fine-print">Ask {name} to explain the facts you taught back in a new example.</p></section>
         <a className="avatar-link" href="https://docs.boson.ai/models/higgs-avatar/realtime-sessions" target="_blank" rel="noreferrer">Boson live avatar setup guide ↗</a>
       </aside>
     </div>

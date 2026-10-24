@@ -42,23 +42,30 @@ export function LessonSetup({ topic, onTopic, studentName, onStudentName, studen
       <div><label htmlFor="student-intelligence">Student intelligence</label><select id="student-intelligence" value={student.level} disabled={disabled} onChange={e => onStudent({ ...student, level: e.target.value as StudentSettings["level"] })}>{Object.entries(LEARNING_LEVELS).map(([id, level]) => <option key={id} value={id}>{level.label}</option>)}</select></div>
       <p>{LEARNING_LEVELS[student.level].description}</p>
     </div>
-    <label htmlFor="student-name">What should we call your student?</label>
-    <input id="student-name" value={studentName} onChange={event => onStudentName(event.target.value)} disabled={disabled} maxLength={40} autoComplete="off" />
-    <div className="notes-upload">
-      <label htmlFor="instructor-notes">Instructor reference notes (optional)</label>
-      <input ref={notesInput} id="instructor-notes" type="file" accept=".txt,text/plain" disabled={disabled || readingNotes} onChange={event => void uploadNotes(event.target.files?.[0])} aria-describedby="notes-help" />
-      <p id="notes-help">Plain-text .txt only, up to 64 KB. Sent to Boson for instructor-only checks; the student will not see these notes. Avoid sensitive information, and teach the material to the student yourself.</p>
-      {notesFileName && <div className="notes-file"><span>{notesFileName} · {notes.length.toLocaleString()} characters</span><button type="button" disabled={disabled} onClick={() => { onNotesChange(""); setNotesFileName(""); setNotesError(""); }}>Remove notes</button></div>}
-      {notesError && <p className="error" role="alert">{notesError}</p>}
-      {mockMode && notes.length > 0 && <p className="notes-mode-notice">Local mock mode does not use uploaded reference notes; select Boson voice or talking avatar for instructor checks against your notes.</p>}
-    </div>
-    <div className="familiarity-control">
-      <div className="familiarity-heading"><label htmlFor="student-familiarity">{studentName}’s response style</label><output htmlFor="student-familiarity">{familiarity}% · {familiarityLabel}</output></div>
-      <input id="student-familiarity" type="range" min="0" max="100" step="1" value={familiarity} onChange={event => onFamiliarity(Number(event.target.value))} disabled={disabled} aria-valuetext={`${familiarity} percent, ${familiarityLabel}`} />
-      <div className="familiarity-labels" aria-hidden="true"><span>Receptive</span><span>More questioning</span></div>
-      <p className="fine-print">The student always starts with no topic facts; this only changes how readily they question what is taught.</p>
-    </div>
     <div className="topic-help-row"><p id="topic-help">{preparing ? `Preparing ${studentName}’s questions and learning map…` : "Choose a topic, start a lesson, and explain it in your own words."}</p><div className="topic-examples">{["Photosynthesis", "French past tense", "Gradient descent"].map(example => <button type="button" key={example} disabled={disabled} onClick={() => onTopic(example)}>{example}</button>)}</div></div>
+    <details className="lesson-options">
+      <summary>More lesson options</summary>
+      <div className="lesson-options-content">
+        <div>
+          <label htmlFor="student-name">What should we call your student?</label>
+          <input id="student-name" value={studentName} onChange={event => onStudentName(event.target.value)} disabled={disabled} maxLength={40} autoComplete="off" />
+        </div>
+        <div className="familiarity-control">
+          <div className="familiarity-heading"><label htmlFor="student-familiarity">{studentName}’s response style</label><output htmlFor="student-familiarity">{familiarity}% · {familiarityLabel}</output></div>
+          <input id="student-familiarity" type="range" min="0" max="100" step="1" value={familiarity} onChange={event => onFamiliarity(Number(event.target.value))} disabled={disabled} aria-valuetext={`${familiarity} percent, ${familiarityLabel}`} />
+          <div className="familiarity-labels" aria-hidden="true"><span>Receptive</span><span>More questioning</span></div>
+          <p className="fine-print">The student starts without topic facts; this changes how readily they question what is taught.</p>
+        </div>
+        <div className="notes-upload">
+          <label htmlFor="instructor-notes">Instructor reference notes (optional)</label>
+          <input ref={notesInput} id="instructor-notes" type="file" accept=".txt,text/plain" disabled={disabled || readingNotes} onChange={event => void uploadNotes(event.target.files?.[0])} aria-describedby="notes-help" />
+          <p id="notes-help">Plain-text .txt only, up to 64 KB. Used for instructor-only checks; the student will not see these notes.</p>
+          {notesFileName && <div className="notes-file"><span>{notesFileName} · {notes.length.toLocaleString()} characters</span><button type="button" disabled={disabled} onClick={() => { onNotesChange(""); setNotesFileName(""); setNotesError(""); }}>Remove notes</button></div>}
+          {notesError && <p className="error" role="alert">{notesError}</p>}
+          {mockMode && notes.length > 0 && <p className="notes-mode-notice">Local mock mode does not use uploaded reference notes; select Boson voice or talking avatar for instructor checks against your notes.</p>}
+        </div>
+      </div>
+    </details>
     <span className="visually-hidden" role="status">{preparing ? "Preparing your lesson." : ""}</span>
   </section>;
 }
