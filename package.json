@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Teach Maya or Kai any topic with Boson Higgs Realtime",
+  "description": "Teach Alex gradient descent with Boson Higgs Realtime",
   "scripts": {
     "dev": "concurrently -n server,client -c blue,green \"npm:dev:server\" \"npm:dev:client\"",
     "dev:client": "vite",
@@ -13,26 +13,20 @@
     "typecheck": "tsc -b --noEmit",
     "test": "vitest run",
     "probe": "tsx tools/probe.ts",
-    "probe:vision": "tsx tools/probe-vision.ts",
-    "probe:whiteboard": "tsx tools/probe-whiteboard.ts",
     "start": "NODE_ENV=production tsx server/index.ts",
     "avatar:config": "tsx tools/avatar-config.ts",
     "avatar:setup": "node tools/setup-avatar.mjs",
-    "avatar:check": "node tools/run-avatar-python.mjs avatar/agent.py --check",
-    "test:avatar": "node tools/run-avatar-python.mjs -m unittest discover -s avatar -p test_*.py",
-    "probe:avatar": "node tools/run-avatar-python.mjs tools/avatar-probe.py",
-    "probe:photo": "node tools/run-avatar-python.mjs tools/photo-video-probe.py"
+    "test:avatar": ".venv-avatar/bin/python -m unittest discover -s avatar -p 'test_*.py'",
+    "probe:avatar": ".venv-avatar/bin/python tools/avatar-probe.py"
   },
   "dependencies": {
-    "@google/genai": "^2.31.0",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "livekit-client": "^2.23.0",
     "livekit-server-sdk": "^2.19.2",
     "qrcode": "^1.5.4",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "ws": "^8.22.0"
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
@@ -40,7 +34,6 @@
     "@types/qrcode": "^1.5.6",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
-    "@types/ws": "^8.18.2",
     "@vitejs/plugin-react": "^6.1.2",
     "concurrently": "^9.1.2",
     "fake-indexeddb": "^6.2.6",

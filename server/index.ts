@@ -1,14 +1,10 @@
 import { readFileSync } from "node:fs";
-import { createServer } from "node:http";
 import express from "express";
 import dotenv from "dotenv";
 import { resolve } from "node:path";
 import { readRealtimeSettings } from "../src/realtime/runtimeConfig";
-import { buildTaggedSpeechInput, isSpeechEmotion } from "../src/realtime/speechTags";
 import { createAvatarRouter } from "./avatarSessions";
 import { createLessonService } from "./lessons";
-import { createVisionService } from "./vision";
-import { createWhiteboardSync } from "./whiteboardSync";
 
 dotenv.config();
 
@@ -49,70 +45,18 @@ const BOSON_API_KEY = loadApiKey();
 
 const app = express();
 app.disable("x-powered-by");
-app.use("/api", (_req, res, next) => { res.setHeader("Cache-Control", "no-store"); next(); });
-app.use("/api/vision", express.json({ limit: "1500kb" }), createVisionService());
+// Baby Yoda clip mode posts a validated local photo plus one short reply's
+// audio to the server so it can call Boson's documented video endpoint.
+app.use("/api/avatar/character-videos", express.json({ limit: "20mb" }));
 app.use(express.json({ limit: "128kb" }));
-const whiteboards = createWhiteboardSync();
-app.use("/api/whiteboard", whiteboards.router);
-const lessonService = createLessonService(BOSON_API_KEY, whiteboards.authorizeLesson);
+app.use("/api", (_req, res, next) => { res.setHeader("Cache-Control", "no-store"); next(); });
+const lessonService = createLessonService(BOSON_API_KEY);
 app.use("/api/lessons", lessonService.router);
 const avatars = createAvatarRouter(BOSON_API_KEY, lessonService);
 app.use("/api/avatar", avatars.router);
-process.once("SIGTERM", () => { whiteboards.close(); void avatars.close().finally(() => process.exit(0)); });
-process.once("SIGINT", () => { whiteboards.close(); void avatars.close().finally(() => process.exit(0)); });
+process.once("SIGTERM", () => { void avatars.close().finally(() => process.exit(0)); });
+process.once("SIGINT", () => { void avatars.close().finally(() => process.exit(0)); });
 app.get("/api/config", (_req, res) => res.json({ voiceConfigured: Boolean(BOSON_API_KEY), ...realtimeSettings }));
-app.post("/api/speech", async (req, res) => {
-  if (!BOSON_API_KEY) return res.status(503).json({ error: "Add BOSON_API_KEY to .env to use tagged Higgs TTS." });
-  const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
-  const emotion = req.body?.emotion;
-  if (!text || text.length > 5000) return res.status(400).json({ error: "Speech text must contain 1–5,000 characters." });
-  if (!isSpeechEmotion(emotion)) return res.status(400).json({ error: "Choose a supported speech emotion." });
-
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  try {
-    const controller = new AbortController();
-    timeout = setTimeout(() => controller.abort(), 180000);
-    res.on("close", () => {
-      if (!res.writableEnded) controller.abort();
-    });
-    const upstream = await fetch(`${BOSON_BASE_URL.replace(/\/$/, "")}/v1/audio/speech`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${BOSON_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "higgs-tts-3",
-        input: buildTaggedSpeechInput(text, emotion),
-        voice: "default",
-        response_format: "pcm",
-        stream: true,
-      }),
-      signal: controller.signal,
-    });
-    if (!upstream.ok) {
-      console.error(`Tagged TTS failed: ${upstream.status}`);
-      return res.status(502).json({ error: `Boson tagged speech synthesis failed (${upstream.status}). Check your API key and available credit.` });
-    }
-    if (!upstream.body) {
-      return res.status(502).json({ error: "Boson returned no tagged speech audio." });
-    }
-    res.setHeader("Content-Type", "audio/pcm");
-    res.setHeader("X-Audio-Sample-Rate", "24000");
-    for await (const chunk of upstream.body) {
-      if (!res.write(Buffer.from(chunk))) {
-        await new Promise<void>(resolve => res.once("drain", resolve));
-      }
-    }
-    return res.end();
-  } catch (error) {
-    console.error("Tagged TTS request failed:", error);
-    if (res.headersSent) {
-      res.destroy(error instanceof Error ? error : undefined);
-      return;
-    }
-    return res.status(502).json({ error: "Could not reach Boson tagged speech synthesis." });
-  } finally {
-    if (timeout) clearTimeout(timeout);
-  }
-});
 
 /**
  * GET /api/token
@@ -172,13 +116,10 @@ app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
 if (process.env.NODE_ENV === "production") {
   app.use(express.static(resolve("dist")));
-  app.get("*", (req, res, next) => req.path.startsWith("/api/") ? next() : res.sendFile(resolve("dist/index.html")));
 }
 
-const server = createServer(app);
-whiteboards.attach(server);
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`TeachBack server listening on http://localhost:${PORT}`);
+app.listen(PORT, "127.0.0.1", () => {
+  console.log(`Token server listening on http://localhost:${PORT}`);
   if (!BOSON_API_KEY) {
     console.warn(
       "No Boson key configured. Live voice is unavailable; Local mock is ready for UI development.",

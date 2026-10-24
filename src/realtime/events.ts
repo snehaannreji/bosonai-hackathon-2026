@@ -53,6 +53,8 @@ export const SERVER = {
   /** Streaming text of what the model is saying, as it says it. */
   audioTranscriptDelta: "response.output_audio_transcript.delta",
   audioTranscriptDone: "response.output_audio_transcript.done",
+  outputTextDelta: "response.output_text.delta",
+  outputTextDone: "response.output_text.done",
 
   /** The model wants to call a tool; the arguments are complete. */
   functionCallArgsDone: "response.function_call_arguments.done",

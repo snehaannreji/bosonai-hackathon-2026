@@ -16,21 +16,23 @@
     "server",
     "tools",
     "src/realtime/events.ts",
-    "src/whiteboard/visionCapability.ts",
-    "src/whiteboard/observations.ts",
-    "src/whiteboard/contextChannel.ts",
     "src/realtime/speechTags.ts",
     "src/realtime/sessionConfig.ts",
     "src/realtime/runtimeConfig.ts",
     "src/realtime/avatarToolBridge.ts",
     "src/realtime/catalogCache.ts",
-    "src/realtime/avatarCatalog.ts",
     "src/state/transcriptStore.ts",
     "src/tools/**/*.ts",
     "src/state/knowledge.ts",
     "src/state/lesson.ts",
     "src/state/student.ts",
+    "src/state/characters.ts",
+    "src/state/kevinSpeech.ts",
+    "src/state/learnerSettings.ts",
     "src/state/topicKnowledge.ts",
-    "src/state/createKnowledgeTracker.ts"
+    "src/state/createKnowledgeTracker.ts",
+    "src/whiteboard/observations.ts",
+    "src/whiteboard/visionCapability.ts",
+    "src/whiteboard/contextChannel.ts"
   ]
 }

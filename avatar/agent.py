@@ -6,10 +6,10 @@ import asyncio
 import base64
 import json
 import os
-import random
+import re
 import signal
 import sys
-import threading
+from threading import Event as ThreadEvent, Thread
 from datetime import timedelta
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
@@ -30,7 +30,6 @@ ROOM = os.environ.get("TEACHBACK_ROOM", "avatar-demo")
 AGENT_IDENTITY = "agent"
 AVATAR_IDENTITY = "boson-avatar"
 AVATAR_ID = os.environ.get("TEACHBACK_AVATAR_ID") or os.environ.get("BOSON_AVATAR_ID") or "builtin_claire_v1"
-AUDIO_RENDERER = os.environ.get("TEACHBACK_AUDIO_RENDERER", "realtime")
 MAX_DURATION_SECONDS = 600
 BOSON = {"Authorization": f"Bearer {os.environ['BOSON_API_KEY']}"}
 BOSON_BASE_URL = os.environ.get("BOSON_BASE_URL", "https://api.boson.ai").rstrip("/").removesuffix("/v1") + "/v1"
@@ -39,52 +38,6 @@ BOSON_REALTIME_URL = os.environ.get("BOSON_REALTIME_URL", "wss://api.boson.ai/v1
 
 def report(kind, **values):
     print(json.dumps({"kind": kind, **values}), flush=True)
-
-
-def response_logs_fact(event):
-    response = event.get("response") if isinstance(event, dict) else None
-    output = response.get("output", []) if isinstance(response, dict) else []
-    if any(
-        isinstance(item, dict)
-        and item.get("type") == "function_call"
-        and item.get("name") == "update_understanding"
-        for item in output
-    ):
-        return True
-    return event.get("type") == "response.function_call_arguments.done" and event.get("name") == "update_understanding"
-
-
-def should_apply_emotion(has_fact_log):
-    return not has_fact_log
-
-
-def choose_speech_emotion(rng=random.random):
-    if rng() >= 0.5:
-        return None
-    return random.choices(
-        ("anger", "sadness", "amusement", "contentment", "contemplation", "surprise"),
-        weights=(4, 4, 1, 1, 1, 1),
-        k=1,
-    )[0]
-
-
-def install_stop_handlers(loop, stop):
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(sig, stop.set)
-        except NotImplementedError:
-            signal.signal(sig, lambda _signum, _frame: loop.call_soon_threadsafe(stop.set))
-
-
-async def send_microphone_frame(ws, frame):
-    """Continuously forward the user's LiveKit microphone to Realtime.
-
-    Browser/LiveKit echo cancellation handles the remote avatar audio. Dropping
-    frames while the avatar speaks prevents Realtime's native full-duplex VAD
-    from ever detecting a human barge-in.
-    """
-    audio = base64.b64encode(bytes(frame.data)).decode()
-    await ws.send(json.dumps({"type": "input_audio_buffer.append", "audio": audio}))
 
 
 def livekit_token(identity, *, publish, subscribe, publish_on_behalf=None):
@@ -110,11 +63,22 @@ async def main():
     realtime_url = urlunsplit(endpoint._replace(query=urlencode(query)))
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
-    install_stop_handlers(loop, stop)
+    if os.name == "nt":
+        # ProactorEventLoop on Windows does not implement add_signal_handler.
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(sig, lambda *_: loop.call_soon_threadsafe(stop.set))
+    else:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, stop.set)
     room = rtc.Room()
     session_id = None
     tasks = set()
     output = None
+    use_tts = "text" in config["session"].get("output_modalities", [])
+    feedback_directness = max(0, min(100, int(os.environ.get("TEACHBACK_FEEDBACK_DIRECTNESS", "35"))))
+    character_id = os.environ.get("TEACHBACK_CHARACTER_ID", "alex")
+    kevin_learning_started = False
+    kevin_play_reply_count = 0
     def task(coro):
         created = asyncio.create_task(coro); tasks.add(created)
         created.add_done_callback(tasks.discard)
@@ -150,10 +114,85 @@ async def main():
             speaking = False
             truncate_item = None
             forwarded = set()
-            tts_generation = 0
-            response_transcripts = []
-            response_has_fact_log = False
-            tagged_items = set()
+            assistant_text = ""
+            synthesis_task = None
+            synthesis_cancel = None
+
+            async def synthesize_reply(text):
+                nonlocal speaking, synthesis_cancel
+                cancel = ThreadEvent()
+                synthesis_cancel = cancel
+                chunks = asyncio.Queue()
+                level = feedback_directness
+                if character_id == "baby-yoda":
+                    delivery = "<|emotion:affection|><|prosody:pitch_high|>"
+                elif character_id == "kevin":
+                    delivery = "<|emotion:amusement|><|prosody:expressive_high|>"
+                elif character_id == "alex" and level >= 70:
+                    delivery = "<|emotion:anger|><|prosody:expressive_high|><|prosody:pitch_low|><|prosody:speed_fast|><|sfx:sigh|>Ah "
+                elif character_id == "alex" and level >= 35:
+                    delivery = "<|emotion:determination|><|prosody:expressive_high|>"
+                else:
+                    delivery = "<|emotion:affection|><|prosody:pitch_high|>"
+                # Give the TTS model explicit vocal controls; Realtime itself
+                # only accepts a voice and natural-language delivery guidance.
+                if character_id == "kevin":
+                    text = re.sub(r"\bbananas?\b", "Banana!", text, flags=re.IGNORECASE)
+                    text = re.sub(r"\bBanana!", "<|emotion:amusement|><|prosody:expressive_high|>Banana!", text, count=1)
+                first, separator, rest = text.partition(". ")
+                spoken = delivery + first + ("<|prosody:pause|> " + rest if separator else "")
+                payload = {"model": "higgs-tts-3", "input": spoken,
+                           "response_format": "pcm", "stream": True}
+                if character_id in ("baby-yoda", "kevin"):
+                    try:
+                        reference_name = "kevin-reference.mp3" if character_id == "kevin" else "baby-yoda-reference-short.mp3"
+                        reference = Path(__file__).resolve().parent.parent / "assets/characters" / reference_name
+                        payload["ref_audio"] = base64.b64encode(reference.read_bytes()).decode("ascii")
+                    except OSError:
+                        pass
+
+                def produce_pcm():
+                    try:
+                        with requests.post(f"{BOSON_BASE_URL}/audio/speech", headers=BOSON,
+                                           json=payload, stream=True, timeout=(10, 90)) as response:
+                            response.raise_for_status()
+                            for chunk in response.iter_content(chunk_size=4096):
+                                if cancel.is_set(): break
+                                if chunk: loop.call_soon_threadsafe(chunks.put_nowait, chunk)
+                    except Exception as error:
+                        loop.call_soon_threadsafe(chunks.put_nowait, error)
+                    finally:
+                        loop.call_soon_threadsafe(chunks.put_nowait, None)
+
+                producer = asyncio.create_task(asyncio.to_thread(produce_pcm))
+                pcm = bytearray()
+                frame_bytes = 960 * 2  # 20 ms of mono PCM16 at 24 kHz.
+                try:
+                    while True:
+                        chunk = await chunks.get()
+                        if chunk is None: break
+                        if isinstance(chunk, Exception): raise chunk
+                        pcm.extend(chunk)
+                        while len(pcm) >= frame_bytes and not cancel.is_set():
+                            frame = bytes(pcm[:frame_bytes]); del pcm[:frame_bytes]
+                            await output.capture_frame(rtc.AudioFrame(frame, 24000, 1, 960))
+                            speaking = True; set_activity("speaking")
+                    if pcm and not cancel.is_set():
+                        samples = (len(pcm) + 1) // 2
+                        padded = bytes(pcm) + (b"\0" if len(pcm) % 2 else b"")
+                        await output.capture_frame(rtc.AudioFrame(padded, 24000, 1, samples))
+                        speaking = True; set_activity("speaking")
+                    await producer
+                    if not cancel.is_set(): output.flush()
+                except asyncio.CancelledError:
+                    cancel.set()
+                    producer.cancel()
+                    raise
+                except Exception:
+                    cancel.set()
+                    report("error", message="Higgs TTS could not synthesize the avatar reply. Check BOSON_API_KEY, credit, and network access.")
+                finally:
+                    if synthesis_cancel is cancel: synthesis_cancel = None
 
             @output.on("playback_finished")
             def played(event):
@@ -170,7 +209,7 @@ async def main():
                 stream = rtc.AudioStream(track, sample_rate=24000, num_channels=1)
                 try:
                     async for event in stream:
-                        await send_microphone_frame(ws, event.frame)
+                        await ws.send(json.dumps({"type": "input_audio_buffer.append", "audio": base64.b64encode(bytes(event.frame.data)).decode()}))
                 except websockets.ConnectionClosed: pass
                 finally:
                     await stream.aclose()
@@ -189,167 +228,92 @@ async def main():
                     if publication.track is not None: track_subscribed(publication.track, publication, participant)
 
             async def commands():
-                lines = asyncio.Queue()
+                # Windows' Proactor event loop does not implement
+                # connect_read_pipe. Read the parent process' stdin on a
+                # daemon thread and hand lines back to the asyncio loop.
+                inbox = asyncio.Queue()
 
                 def read_stdin():
-                    for line in sys.stdin:
-                        loop.call_soon_threadsafe(lines.put_nowait, line)
-                    loop.call_soon_threadsafe(lines.put_nowait, None)
+                    try:
+                        for line in sys.stdin:
+                            loop.call_soon_threadsafe(inbox.put_nowait, line)
+                    except (OSError, RuntimeError):
+                        return
+                    try:
+                        loop.call_soon_threadsafe(inbox.put_nowait, None)
+                    except RuntimeError:
+                        pass
 
-                threading.Thread(target=read_stdin, daemon=True).start()
-                while (line := await lines.get()) is not None:
+                Thread(target=read_stdin, name="avatar-stdin", daemon=True).start()
+                while (line := await inbox.get()) is not None:
                     try:
                         command = json.loads(line)
                         if command.get("kind") == "send": await ws.send(json.dumps(command["event"]))
+                        elif command.get("kind") == "settings":
+                            nonlocal feedback_directness, kevin_learning_started
+                            feedback_directness = max(0, min(100, int(command.get("feedbackDirectness", feedback_directness))))
+                            if command.get("kevinLearningStarted") is True:
+                                kevin_learning_started = True
                     except (ValueError, KeyError): pass
                 stop.set()
 
-            async def synthesize_tagged_speech(text, item_id, generation, apply_emotion=True):
-                nonlocal current_item, speaking
-                if not isinstance(text, str) or not text.strip():
-                    return
-                emotion = choose_speech_emotion() if apply_emotion else None
-                tags = {
-                    "anger": "<|emotion:anger|><|style:shouting|>",
-                    "sadness": "<|emotion:sadness|><|sfx:crying|>",
-                    "amusement": "<|emotion:amusement|>",
-                    "contentment": "<|emotion:contentment|>",
-                    "contemplation": "<|emotion:contemplation|><|prosody:pause|>",
-                    "surprise": "<|emotion:surprise|>",
-                }
-                speech_input = f"{tags[emotion]}{text.strip()}" if emotion else text.strip()
-
-                def request_audio():
-                    response = requests.post(
-                        f"{BOSON_BASE_URL}/audio/speech",
-                        headers=BOSON,
-                        json={
-                            "model": "higgs-tts-3",
-                            "input": speech_input,
-                            "voice": "default",
-                            "response_format": "pcm",
-                            "stream": True,
-                        },
-                        stream=True,
-                        timeout=180,
-                    )
-                    response.raise_for_status()
-                    return response
-
-                def next_chunk(iterator):
-                    try:
-                        return True, next(iterator)
-                    except StopIteration:
-                        return False, b""
-
-                try:
-                    response = await asyncio.to_thread(request_audio)
-                    with response:
-                        pending = bytearray()
-                        current_item = item_id
-                        received_audio = False
-                        emotion_reported = False
-                        chunks = iter(response.iter_content(chunk_size=1920))
-                        while True:
-                            has_chunk, chunk = await asyncio.to_thread(next_chunk, chunks)
-                            if not has_chunk:
-                                break
-                            if generation != tts_generation or stop.is_set():
-                                return
-                            if not chunk:
-                                continue
-                            pending.extend(chunk)
-                            while len(pending) >= 1920:
-                                pcm = bytes(pending[:1920])
-                                del pending[:1920]
-                                await output.capture_frame(rtc.AudioFrame(pcm, 24000, 1, len(pcm) // 2))
-                                if emotion and not emotion_reported:
-                                    report("emotion", item_id=item_id, emotion=emotion, transcript=text.strip(), tags=tags[emotion])
-                                    emotion_reported = True
-                                received_audio = True
-                                speaking = True
-                                set_activity("speaking")
-                        if pending and generation == tts_generation and not stop.is_set():
-                            if len(pending) % 2:
-                                pending.pop()
-                            if pending:
-                                pcm = bytes(pending)
-                                await output.capture_frame(rtc.AudioFrame(pcm, 24000, 1, len(pcm) // 2))
-                                if emotion and not emotion_reported:
-                                    report("emotion", item_id=item_id, emotion=emotion, transcript=text.strip(), tags=tags[emotion])
-                                    emotion_reported = True
-                                received_audio = True
-                                speaking = True
-                                set_activity("speaking")
-                        if not received_audio:
-                            raise ValueError("Boson returned an empty PCM stream.")
-                        if speaking and generation == tts_generation:
-                            output.flush()
-                except (requests.RequestException, ValueError) as error:
-                    report("tts_error", message=f"Tagged speech synthesis failed ({type(error).__name__}).")
-                    if generation == tts_generation:
-                        if speaking:
-                            output.clear_buffer()
-                            speaking = False
-                        set_activity("listening")
-
             async def receive():
-                nonlocal current_item, speaking, truncate_item, tts_generation
-                nonlocal response_transcripts, response_has_fact_log
-                ready_announced = False
+                nonlocal current_item, speaking, truncate_item, assistant_text, synthesis_task, feedback_directness, kevin_learning_started, kevin_play_reply_count
                 async for message in ws:
                     event = json.loads(message)
                     kind = event["type"]
-                    if kind != "response.output_audio.delta": report("server_event", event=event)
+                    if not (use_tts and kind in ("response.output_text.delta", "response.output_text.done")) and kind != "response.output_audio.delta": report("server_event", event=event)
                     if kind in ("session.created", "session.updated"):
-                        if not ready_announced:
-                            ready_announced = True
-                            report("ready"); set_activity("listening")
+                        report("ready"); set_activity("listening")
                     elif kind == "response.created":
-                        tts_generation += 1
-                        response_transcripts = []
-                        response_has_fact_log = False
-                        report("turn_debug", name="ai_response_started", response_id=event.get("response", {}).get("id"))
-                    elif kind == "response.output_audio.delta":
-                        if AUDIO_RENDERER != "tagged-tts":
-                            if event.get("item_id"): current_item = event["item_id"]
-                            pcm = base64.b64decode(event["delta"])
-                            await output.capture_frame(rtc.AudioFrame(pcm, 24000, 1, len(pcm) // 2))
-                            speaking = True; set_activity("speaking")
-                    elif kind == "response.function_call_arguments.done":
-                        if event.get("name") == "update_understanding":
-                            response_has_fact_log = True
-                    elif kind == "response.output_audio_transcript.done" and AUDIO_RENDERER == "tagged-tts":
-                        item_id = event.get("item_id")
-                        if isinstance(item_id, str) and item_id in tagged_items:
-                            report("turn_debug", name="duplicate_tagged_audio_suppressed", item_id=item_id)
-                            continue
-                        if isinstance(item_id, str):
-                            current_item = item_id
-                            tagged_items.add(item_id)
-                        response_transcripts.append((event.get("transcript", ""), item_id, tts_generation))
-                    elif kind == "response.done":
-                        report("turn_debug", name="ai_response_finished", response_id=event.get("response", {}).get("id"), status=event.get("response", {}).get("status"))
-                        if AUDIO_RENDERER == "tagged-tts":
-                            response_has_fact_log = response_has_fact_log or response_logs_fact(event)
-                            apply_emotion = should_apply_emotion(response_has_fact_log)
-                            for transcript, item_id, generation in response_transcripts:
-                                task(synthesize_tagged_speech(transcript, item_id, generation, apply_emotion))
-                            response_transcripts = []
-                        elif speaking:
-                            output.flush()
-                        elif activity != "listening":
-                            set_activity("listening")
-                    elif kind == "input_audio_buffer.speech_started":
-                        tts_generation += 1
-                        report("turn_debug", name="user_speech_detected", item_id=event.get("item_id"), interrupted=speaking)
-                        if speaking:
-                            truncate_item = current_item; output.clear_buffer(); speaking = False
-                            report("turn_debug", name="avatar_playback_interrupted", item_id=current_item)
-                        set_activity("listening")
-                    elif kind == "input_audio_buffer.speech_stopped":
-                        report("turn_debug", name="user_speech_ended", item_id=event.get("item_id"))
+                        assistant_text = ""
                         set_activity("thinking")
+                    elif kind == "response.output_text.delta" and isinstance(event.get("delta"), str):
+                        assistant_text += event["delta"]
+                        # Kevin's play-mode text is replaced when the full reply is
+                        # ready. Don't show raw model tokens that won't be spoken.
+                        if not (use_tts and character_id == "kevin" and not kevin_learning_started):
+                            report("server_event", event=event)
+                    elif kind == "conversation.item.input_audio_transcription.completed":
+                        transcript = str(event.get("transcript", ""))
+                        if character_id == "kevin" and re.search(r"\bkevin\b[\s,.:;!?-]*(?:you|u)\s+need\s+to\s+concentrate\b", transcript, flags=re.IGNORECASE):
+                            kevin_learning_started = True
+                        report("server_event", event=event)
+                    elif kind == "response.output_text.done" and isinstance(event.get("text"), str):
+                        assistant_text = event["text"]
+                        if use_tts and character_id == "kevin":
+                            if not kevin_learning_started:
+                                playful_replies = ["Banana!", "Ha ha ha!", "Bello! Hee hee!", "Banana! Hee hee!", "Bello! Bello!", "Ha ha ha!"]
+                                assistant_text = playful_replies[kevin_play_reply_count % len(playful_replies)]
+                                kevin_play_reply_count += 1
+                            else:
+                                assistant_text = re.sub(r"\bbananas?\b", "Banana!", assistant_text, flags=re.IGNORECASE)
+                            event["text"] = assistant_text
+                        report("server_event", event=event)
+                    elif kind == "response.output_audio.delta":
+                        if event.get("item_id"): current_item = event["item_id"]
+                        pcm = base64.b64decode(event["delta"])
+                        await output.capture_frame(rtc.AudioFrame(pcm, 24000, 1, len(pcm) // 2))
+                        speaking = True; set_activity("speaking")
+                    elif kind == "response.done":
+                        if use_tts and assistant_text.strip():
+                            if synthesis_task and not synthesis_task.done():
+                                if synthesis_cancel: synthesis_cancel.set()
+                                synthesis_task.cancel()
+                            synthesis_task = task(synthesize_reply(assistant_text.strip()))
+                            assistant_text = ""
+                        elif speaking: output.flush()
+                        elif activity != "listening": set_activity("listening")
+                    elif kind == "input_audio_buffer.speech_started":
+                        if use_tts and synthesis_task and not synthesis_task.done():
+                            if synthesis_cancel: synthesis_cancel.set()
+                            synthesis_task.cancel()
+                            output.clear_buffer(); speaking = False
+                        if speaking:
+                            if not use_tts: truncate_item = current_item
+                            output.clear_buffer(); speaking = False
+                        set_activity("listening")
+                    elif kind == "input_audio_buffer.speech_stopped": set_activity("thinking")
                 stop.set()
 
             receiver = task(receive())

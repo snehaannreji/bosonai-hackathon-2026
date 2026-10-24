@@ -10,12 +10,25 @@ Built from [Boson’s official Higgs Realtime tutorial](https://github.com/boson
 
 Install **Node.js 22.22+** and npm first (`node --version`). From this directory:
 
-```bash
+```powershell
 npm ci
-cp .env.example .env
-# Edit .env and set your Realtime 1.5-enabled BOSON_API_KEY for live voice.
+Copy-Item .env.example .env
+# Add BOSON_API_KEY in .env before launching the app.
 npm run dev
 ```
+
+Edit `.env` after copying it and fill in the values below before starting the dev server. On macOS or Linux, use `cp .env.example .env` instead of `Copy-Item`.
+
+For the existing live avatar mode, create a project at [LiveKit Cloud](https://cloud.livekit.io/), then copy its WebSocket URL and a key/secret from **Settings → Keys** into the root `.env`. Keep all four values server-side:
+
+```dotenv
+BOSON_API_KEY=your-boson-api-key
+LIVEKIT_URL=wss://your-project.livekit.cloud
+LIVEKIT_API_KEY=your-livekit-api-key
+LIVEKIT_API_SECRET=your-livekit-api-secret
+```
+
+When **Baby Yoda** is selected, **Baby Yoda talking clips** uses the supplied portrait by default (or an uploaded replacement), then lets you speak or type and waits for a lip-synced clip generated from the AI's reply text using the included baby-babble recording as a Higgs TTS voice reference; Higgs Avatar animates that generated speech. Baby Yoda replies use short, broken phrases with occasional voiced babble syllables, all synthesized from the same reference voice. This is experimental and may sound unclear or babbly. It needs only `BOSON_API_KEY`; the portrait and reply text are sent to Boson, and video generation is billed. The existing **Boson talking avatar** mode remains the interactive preset-face experience and needs all three LiveKit settings plus the one-time `npm run avatar:setup` install (Python 3.10+). **Boson voice + photo** only displays a browser-local still portrait. After editing `.env`, restart `npm run dev`. Details and troubleshooting are in [docs/AVATAR.md](docs/AVATAR.md).
 
 Open **http://localhost:5173**. The command starts the Node token server on port 3000 and React/Vite on port 5173.
 

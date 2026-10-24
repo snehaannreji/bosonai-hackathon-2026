@@ -1,10 +1,9 @@
 import { Room, RoomEvent, Track, type RemoteAudioTrack, type RemoteVideoTrack } from "livekit-client";
-import type { Activity, AudioRenderer, RealtimeCallbacks } from "./RealtimeClient";
+import type { Activity, RealtimeCallbacks } from "./RealtimeClient";
 import type { KnowledgeState } from "../state/knowledge";
 import type { ServerEvent } from "./events";
-import { EmotionAcknowledgmentTracker } from "./emotionAcknowledgment";
-import { isSpeechEmotion } from "./speechTags";
-import type { ContextReceipt, VisualContext } from "../whiteboard/observations";
+import type { CharacterId } from "../state/characters";
+import { DEFAULT_LEARNER_SETTINGS, type LearnerSettings } from "../state/learnerSettings";
 
 async function post(path: string, body = {}, keepalive = false) {
   const response = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), keepalive });
@@ -24,20 +23,15 @@ export class LiveAvatarClient {
   private mic = false;
   private voiceReady = false;
   private videoReady = false;
+  private settingsUpdatePending = false;
   private elements = new Map<RemoteAudioTrack, HTMLMediaElement>();
   private meter: ReturnType<typeof setInterval> | null = null;
   private timeout: ReturnType<typeof setTimeout> | null = null;
   private release: Promise<unknown> = Promise.resolve();
-  private emotionAcknowledgment: EmotionAcknowledgmentTracker;
   private unload = () => { if (this.lessonId) navigator.sendBeacon(`/api/avatar/lessons/${this.lessonId}/end`, ""); };
-  constructor(private cb: RealtimeCallbacks, private avatarId: string, private onVideo: (track: RemoteVideoTrack | null) => void, private audioRenderer: AudioRenderer = "realtime") {
-    this.emotionAcknowledgment = new EmotionAcknowledgmentTracker(result => this.cb.onLog?.({
-      id: Date.now() + Math.random(),
-      dir: "info",
-      type: result.type,
-      at: Date.now(),
-      raw: result,
-    }));
+  private characterId: CharacterId;
+  constructor(private cb: RealtimeCallbacks, private avatarId: string, private onVideo: (track: RemoteVideoTrack | null) => void, characterId: CharacterId | "tagged-tts" = "alex") {
+    this.characterId = characterId === "tagged-tts" ? "alex" : characterId;
   }
   get micActive() { return this.mic; }
 
@@ -71,37 +65,27 @@ export class LiveAvatarClient {
     });
     try {
       await room.startAudio();
-      const lesson = await post("/api/avatar/lessons", {
-        avatarId: this.avatarId,
-        lessonId: this.cb.lesson?.id,
-        ...(this.audioRenderer === "tagged-tts" ? { audioRenderer: this.audioRenderer } : {}),
-      }) as { id: string; url: string; token: string };
+      const lesson = await post("/api/avatar/lessons", { avatarId: this.avatarId, characterId: this.characterId, lessonId: this.cb.lesson?.id, learnerSettings: this.cb.learnerSettings, sourceMaterial: this.cb.sourceMaterial }) as { id: string; url: string; token: string };
       if (generation !== this.generation) { await post(`/api/avatar/lessons/${lesson.id}/end`); return; }
       this.lessonId = lesson.id;
       window.addEventListener("pagehide", this.unload);
       this.events = new EventSource(`/api/avatar/lessons/${lesson.id}/events`);
       this.events.onmessage = event => {
         if (generation !== this.generation) return;
-        const message = JSON.parse(event.data) as { kind: string; event?: ServerEvent; state?: KnowledgeState; activity?: Activity; message?: string; emotion?: string; tags?: string; item_id?: string; response_id?: string; status?: string; interrupted?: boolean; name?: string };
+        const message = JSON.parse(event.data) as { kind: string; event?: ServerEvent; state?: KnowledgeState; activity?: Activity; message?: string };
         if (message.kind === "server_event" && message.event) {
           this.cb.onServerEvent?.(message.event);
           this.cb.onLog?.({ id: Date.now() + Math.random(), dir: "recv", type: message.event.type, at: Date.now(), raw: message.event });
-          if (message.event.type === "client.emotion_used" && isSpeechEmotion(message.event.emotion)) {
-            this.emotionAcknowledgment.noteEmotion(message.event.emotion, typeof message.event.item_id === "string" ? message.event.item_id : undefined);
-          }
-          if (message.event.type === "conversation.item.input_audio_transcription.completed" && typeof message.event.transcript === "string") {
-            this.emotionAcknowledgment.observeTeacher(message.event.transcript);
-          }
           if (message.event.type === "error") this.cb.onError?.(String((message.event.error as { message?: string } | undefined)?.message ?? "Boson reported a voice session error."));
         } else if (message.kind === "knowledge" && message.state) this.cb.onKnowledgeChange?.(message.state);
-        else if (message.kind === "emotion" && isSpeechEmotion(message.emotion)) {
-          this.emotionAcknowledgment.noteEmotion(message.emotion, message.item_id);
-          this.cb.onLog?.({ id: Date.now() + Math.random(), dir: "info", type: "client.emotion_used", at: Date.now(), raw: message });
-        }
-        else if (message.kind === "tts_error") this.cb.onError?.(message.message ?? "Tagged speech synthesis failed.");
-        else if (message.kind === "turn_debug") this.cb.onLog?.({ id: Date.now() + Math.random(), dir: "info", type: `turn.${message.name ?? "event"}`, at: Date.now(), raw: message });
         else if (message.kind === "activity" && message.activity) this.cb.onActivity?.(message.activity === "listening" && !this.mic ? "idle" : message.activity);
-        else if (message.kind === "ready") { this.voiceReady = true; this.maybeReady(); }
+        else if (message.kind === "ready") {
+          this.voiceReady = true; this.maybeReady();
+          if (this.settingsUpdatePending) {
+            this.settingsUpdatePending = false;
+            void this.updateLearnerSettings(this.cb.learnerSettings ?? DEFAULT_LEARNER_SETTINGS, this.cb.sourceMaterial);
+          }
+        }
         else if (message.kind === "error") this.fail(message.message ?? "Avatar session failed.");
         else if (message.kind === "closed") this.disconnect();
       };
@@ -131,9 +115,12 @@ export class LiveAvatarClient {
     try { await this.room?.startAudio(); await post(`/api/avatar/lessons/${this.lessonId}/text`, { text }); }
     catch (error) { this.cb.onError?.(error instanceof Error ? error.message : "Could not send that explanation."); }
   }
-  async updateWhiteboard(context: VisualContext): Promise<ContextReceipt> {
-    if (!this.active || !this.voiceReady || !this.lessonId) throw new Error("Start the avatar conversation before sharing the board.");
-    return await post(`/api/avatar/lessons/${this.lessonId}/visual-context`, { context }) as ContextReceipt;
+  async updateLearnerSettings(learnerSettings: LearnerSettings, sourceMaterial = "") {
+    this.cb.learnerSettings = learnerSettings;
+    this.cb.sourceMaterial = sourceMaterial;
+    if (!this.lessonId) { this.settingsUpdatePending = true; return; }
+    try { await post(`/api/avatar/lessons/${this.lessonId}/settings`, { learnerSettings, sourceMaterial }); }
+    catch (error) { this.cb.onError?.(error instanceof Error ? error.message : "Could not update learner settings."); }
   }
   disconnect() {
     this.active = false; ++this.generation;

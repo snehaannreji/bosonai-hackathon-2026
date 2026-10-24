@@ -1,59 +1,52 @@
 import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const windows = process.platform === "win32";
-const customPython = process.env.AVATAR_SETUP_PYTHON;
-const candidates = customPython
-  ? [{ command: customPython, args: [] }]
-  : windows
-    ? [
-        ...["3.13", "3.12", "3.11", "3.10"].map(version => ({ command: "py", args: [`-${version}`] })),
-        { command: "py", args: ["-3"] },
-        { command: "python", args: [] },
-      ]
-    : ["python3.13", "python3.12", "python3.11", "python3.10", "python3"].map(command => ({ command, args: [] }));
+const requestedPython = process.env.AVATAR_SETUP_PYTHON;
+const candidates = requestedPython
+  ? [requestedPython]
+  : process.platform === "win32"
+    ? ["py -3.13", "py -3.12", "py -3.11", "py -3.10", "python"]
+    : ["python3.12", "python3.11", "python3.10", "python3"];
 
-const run = (command, args, options = {}) => {
-  const result = spawnSync(command, args, { cwd: root, stdio: "inherit", ...options });
-  if (result.error) throw result.error;
-  return result;
-};
+function run(command, args, options = {}) {
+  const result = spawnSync(command, args, { stdio: "inherit", ...options });
+  if (result.error) return { ok: false, error: result.error };
+  return { ok: result.status === 0, status: result.status };
+}
 
-let python;
+function pythonCommand(candidate) {
+  if (candidate.startsWith("py ")) {
+    const [, version] = candidate.split(" ");
+    return { command: "py", args: [version] };
+  }
+  return { command: candidate, args: [] };
+}
+
+let selected;
 for (const candidate of candidates) {
-  const result = spawnSync(
-    candidate.command,
-    [...candidate.args, "-c", "import sys; raise SystemExit(sys.version_info < (3, 10))"],
-    { cwd: root, stdio: "ignore" },
-  );
-  if (!result.error && result.status === 0) {
-    python = candidate;
+  const parsed = pythonCommand(candidate);
+  const probe = run(parsed.command, [...parsed.args, "-c", "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)"], { stdio: "ignore" });
+  if (probe.ok) {
+    selected = parsed;
     break;
   }
 }
 
-if (!python) {
-  console.error("Python 3.10 or newer was not found. Install it, or set AVATAR_SETUP_PYTHON to its executable path.");
+if (!selected) {
+  console.error("Python 3.10+ was not found. Set AVATAR_SETUP_PYTHON to its executable and retry.");
   process.exit(1);
 }
 
-const venv = resolve(root, ".venv-avatar");
-const venvPython = resolve(venv, windows ? "Scripts" : "bin", windows ? "python.exe" : "python");
+const venvResult = run(selected.command, [...selected.args, "-m", "venv", ".venv-avatar"]);
+if (!venvResult.ok) process.exit(venvResult.status ?? 1);
 
-try {
-  const commands = [
-    [python.command, [...python.args, "-m", "venv", venv]],
-    [venvPython, ["-m", "pip", "install", "-r", resolve(root, "avatar", "requirements.txt")]],
-    [venvPython, [resolve(root, "avatar", "agent.py"), "--check"]],
-  ];
-  for (const [executable, args] of commands) {
-    const result = run(executable, args);
-    if (result.status !== 0) process.exit(result.status ?? 1);
-  }
-  console.log("Avatar agent setup complete.");
-} catch (error) {
-  console.error(`Avatar setup failed: ${error instanceof Error ? error.message : String(error)}`);
-  process.exit(1);
+const venvPython = resolve(
+  process.platform === "win32" ? ".venv-avatar/Scripts/python.exe" : ".venv-avatar/bin/python",
+);
+for (const args of [
+  ["-m", "pip", "install", "-r", "avatar/requirements.txt"],
+  ["avatar/agent.py", "--check"],
+]) {
+  const result = run(venvPython, args);
+  if (!result.ok) process.exit(result.status ?? 1);
 }

@@ -1,17 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { RealtimeClient, type Activity, type AudioRenderer, type ConnectionState, type LogEntry, type RealtimeCallbacks } from "./realtime/RealtimeClient";
+import { useEffect, useRef, useState } from "react";
+import { RealtimeClient, type Activity, type ConnectionState, type LogEntry, type RealtimeCallbacks } from "./realtime/RealtimeClient";
 import { MockClient } from "./realtime/MockClient";
 import { emptyTranscript, transcriptReducer, type TranscriptState } from "./state/transcriptStore";
 import type { KnowledgeState } from "./state/knowledge";
 import type { LessonDefinition } from "./state/lesson";
-import type { InstructorGuideFact } from "./state/lesson";
 import { initialTopicKnowledge } from "./state/topicKnowledge";
 import { prepareLesson, lessonAssessor } from "./realtime/lessonApi";
-import { LessonSetup } from "./ui/LessonSetup";
+import { LessonSetup, type ExperienceMode } from "./ui/LessonSetup";
 import { LearningMap } from "./ui/LearningMap";
 import { DebugDrawer } from "./ui/DebugDrawer";
-import { WhiteboardPanel } from "./ui/WhiteboardPanel";
-import type { VisualContext } from "./whiteboard/observations";
 import { MicButton } from "./ui/MicButton";
 import { TranscriptPanel } from "./ui/TranscriptPanel";
 import type { RealtimeCredentials } from "./realtime/runtimeConfig";
@@ -19,11 +16,9 @@ import { AvatarPhoto } from "./ui/AvatarPhoto";
 import { LiveAvatarClient } from "./realtime/LiveAvatarClient";
 import { LiveAvatarVideo } from "./ui/LiveAvatarVideo";
 import type { RemoteVideoTrack } from "livekit-client";
-import { emotionDashboardRecords } from "./realtime/emotionDashboard";
-import { avatarForStudent, studentAvatarSelection, type AvatarCatalog, type AvatarOption } from "./realtime/avatarCatalog";
-import { DEFAULT_STUDENT, studentName as getStudentName, type StudentSettings } from "./state/student";
-import { InteractionStatus } from "./ui/InteractionStatus";
-import { LessonCompletion } from "./ui/LessonCompletion";
+import { getCharacter, type CharacterId } from "./state/characters";
+import { loadAvatarPhoto } from "./state/avatarPhoto";
+import { DEFAULT_LEARNER_SETTINGS, type LearnerSettings } from "./state/learnerSettings";
 
 async function fetchToken(): Promise<RealtimeCredentials> {
   const res = await fetch("/api/token");
@@ -32,29 +27,55 @@ async function fetchToken(): Promise<RealtimeCredentials> {
   if (typeof body.value !== "string" || typeof body.model !== "string" || typeof body.websocketUrl !== "string") throw new Error("The server returned invalid voice settings. Restart the local server.");
   return { value: body.value, model: body.model, websocketUrl: body.websocketUrl };
 }
-type Mode = "avatar" | "voice" | "mock";
+type Mode = "avatar" | "voice" | "mock" | "character-clips";
+type AvatarStream = { body: ReadableStream<Uint8Array>; contentType: string; key: string };
+const isCharacterClipMode = (mode: Mode) => mode === "character-clips";
+const hasBundledTalkingPortrait = (id: CharacterId) => id === "baby-yoda" || id === "kevin";
+
+function blobBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",", 2)[1] ?? "");
+    reader.onerror = () => reject(new Error("Could not read the character portrait."));
+    reader.readAsDataURL(blob);
+  });
+}
+
+/** Crop the bundled full-body Kevin portrait to a mouth-forward 3:4 framing for Higgs. */
+async function cropKevinForLipSync(blob: Blob): Promise<Blob> {
+  try {
+    const bitmap = await createImageBitmap(blob);
+    if (bitmap.width / bitmap.height <= 0.86) { bitmap.close(); return blob; }
+    const cropWidth = bitmap.height * 0.675;
+    const cropHeight = bitmap.height * 0.9;
+    const canvas = document.createElement("canvas");
+    canvas.width = 756; canvas.height = 1008;
+    const context = canvas.getContext("2d");
+    if (!context) { bitmap.close(); return blob; }
+    context.drawImage(bitmap, (bitmap.width - cropWidth) / 2, 0, cropWidth, cropHeight, 0, 0, canvas.width, canvas.height);
+    bitmap.close();
+    return await new Promise(resolve => canvas.toBlob(result => resolve(result ?? blob), "image/webp", 0.92));
+  } catch { return blob; }
+}
 
 export default function App() {
   const [mode, setMode] = useState<Mode>("avatar");
-  const [audioRenderer, setAudioRenderer] = useState<AudioRenderer>("realtime");
   const [configured, setConfigured] = useState<boolean | null>(null);
   const [connection, setConnection] = useState<ConnectionState>("idle");
   const [activity, setActivity] = useState<Activity>("idle");
   const [log, setLog] = useState<LogEntry[]>([]);
-  const [emotionLog, setEmotionLog] = useState<LogEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [text, setText] = useState("");
   const [transcript, setTranscript] = useState<TranscriptState>(emptyTranscript);
   const [knowledge, setKnowledge] = useState<KnowledgeState>({});
   const [topic, setTopic] = useState("");
-  const [instructorNotes, setInstructorNotes] = useState("");
-  const [familiarity, setFamiliarity] = useState(0);
-  const [student, setStudent] = useState<StudentSettings>({ ...DEFAULT_STUDENT });
-  const [studentName, setStudentName] = useState("Maya");
-  const studentNameCustomized = useRef(false);
+  const [learnerSettings, setLearnerSettings] = useState<LearnerSettings>(DEFAULT_LEARNER_SETTINGS);
+  const [sourceMaterialName, setSourceMaterialName] = useState("");
+  const [sourceMaterial, setSourceMaterial] = useState("");
+  const [experienceMode, setExperienceMode] = useState<ExperienceMode>("study");
+  const [characterId, setCharacterId] = useState<CharacterId>("maya");
+  const character = getCharacter(characterId);
   const [lesson, setLesson] = useState<LessonDefinition | null>(null);
-  const name = lesson?.studentName ?? studentName;
-  const [instructorGuide, setInstructorGuide] = useState<InstructorGuideFact[]>([]);
   const [preparing, setPreparing] = useState(false);
   const startupVersion = useRef(0);
   const startupAbort = useRef<AbortController | null>(null);
@@ -62,37 +83,84 @@ export default function App() {
   const [micLevel, setMicLevel] = useState(0);
   const [micPending, setMicPending] = useState(false);
   const [avatarStatus, setAvatarStatus] = useState<{ configured: boolean; missing: string[]; pythonInstalled: boolean } | null>(null);
-  const [presets, setPresets] = useState<AvatarOption[]>([]);
-  const catalogRef = useRef<AvatarCatalog | null>(null);
-  const studentRef = useRef(student);
-  studentRef.current = student;
-  const [avatarId, setAvatarId] = useState("");
-  const [avatarNotice, setAvatarNotice] = useState<string | null>(null);
+  const [presets, setPresets] = useState<{ id: string; name: string }[]>([]);
+  const [avatarId, setAvatarId] = useState("builtin_claire_v1");
   const [videoTrack, setVideoTrack] = useState<RemoteVideoTrack | null>(null);
   const [avatarError, setAvatarError] = useState<string | null>(null);
   const [avatarReload, setAvatarReload] = useState(0);
-  const [whiteboardOpen, setWhiteboardOpen] = useState(false);
-  const [developerOpen, setDeveloperOpen] = useState(false);
-  const [transcriptCollapsed, setTranscriptCollapsed] = useState(false);
-  const [completionDismissed, setCompletionDismissed] = useState(false);
-  const whiteboardRef = useRef<HTMLElement>(null);
+  const [clipId, setClipId] = useState<string | null>(null);
+  const [clipStream, setClipStream] = useState<AvatarStream | null>(null);
+  const [clipStatus, setClipStatus] = useState("");
+  const clipAbort = useRef<AbortController | null>(null);
+  const resumeMicAfterClip = useRef(false);
   const client = useRef<RealtimeClient | MockClient | LiveAvatarClient | null>(null);
   const micBusy = useRef(false);
   const connected = connection === "open";
   const busy = preparing || connected || connection === "connecting" || connection === "closing";
-  const deliverWhiteboard = useMemo(() => {
-    const target = client.current;
-    if (!connected || mode === "mock" || !target || !("updateWhiteboard" in target)) return undefined;
-    return (context: VisualContext) => target.updateWhiteboard(context);
-  }, [connected, mode, lesson?.id]);
-  const emotionRecords = useMemo(() => emotionDashboardRecords(emotionLog), [emotionLog]);
-  const selectedFace = presets.find(face => face.id === avatarId);
-  const studentAppearance = catalogRef.current ? studentAvatarSelection(catalogRef.current, student) : null;
-  const changeStudent = (next: StudentSettings) => {
-    if (busy) return;
-    if (catalogRef.current && next.id !== student.id) setAvatarId(avatarForStudent(catalogRef.current, next));
-    if (!studentNameCustomized.current) setStudentName(getStudentName(next));
-    setStudent(next); setLesson(null); setKnowledge({}); setTranscript(emptyTranscript); setLog([]); setEmotionLog([]);
+
+  const makeCharacterClip = async (characterId: CharacterId, replyText: string, version: number, feedbackDirectness: number) => {
+    setClipId(null); setClipStream(null); setClipStatus(`Preparing ${getCharacter(characterId).name}’s reply…`); setError(null);
+    const abort = new AbortController(); clipAbort.current = abort;
+    try {
+      resumeMicAfterClip.current = Boolean(client.current?.micActive);
+      if (resumeMicAfterClip.current) await client.current?.stopMic();
+      setMicActive(false); setMicLevel(0);
+      const photo = await loadAvatarPhoto(characterId);
+      let portrait: Blob;
+      let usingBundledPortrait = false;
+      if (photo?.blob) portrait = photo.blob;
+      else {
+        usingBundledPortrait = true;
+        const bundledPortrait = characterId === "kevin" ? "/characters/kevin.jpeg?v=2" : "/characters/baby-yoda.jpeg";
+        const response = await fetch(bundledPortrait);
+        if (!response.ok) throw new Error(`Could not load ${getCharacter(characterId).name}’s portrait.`);
+        portrait = await response.blob();
+      }
+      if (characterId === "kevin" && usingBundledPortrait) portrait = await cropKevinForLipSync(portrait);
+      setClipStatus("Generating a voice and lip-synced talking clip…");
+      const response = await fetch(characterId === "kevin" ? "/api/avatar/character-videos/stream" : "/api/avatar/character-videos", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ characterId, imageMime: portrait.type || (characterId === "kevin" ? "image/webp" : "image/jpeg"), imageBase64: await blobBase64(portrait), replyText, feedbackDirectness }),
+        signal: abort.signal,
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error ?? `Could not create ${getCharacter(characterId).name}’s talking clip.`);
+      }
+      if (characterId === "kevin") {
+        if (!response.body) throw new Error("Boson started the clip without a video stream.");
+        setClipStream({ body: response.body, contentType: response.headers.get("content-type") ?? "video/mp4", key: `${version}-${Date.now()}` });
+        setClipStatus("Kevin is starting to talk…");
+        return;
+      }
+      const created = await response.json();
+      for (let attempt = 0; attempt < 150; attempt++) {
+        if (abort.signal.aborted || startupVersion.current !== version) return;
+        const statusResponse = await fetch(`/api/avatar/character-videos/${created.id}`, { signal: abort.signal });
+        const status = await statusResponse.json();
+        if (!statusResponse.ok) throw new Error(status.error ?? "Could not check the talking clip.");
+        if (status.status === "failed") throw new Error(status.error ?? "Boson could not render the talking clip.");
+        if (status.status === "completed") {
+          setClipId(created.id); setClipStatus("Your reply is ready. Playing now…");
+          return;
+        }
+        setClipStatus(`Generating the talking clip… ${Math.max(0, Math.min(99, status.progress ?? 0))}%`);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+      throw new Error("The talking clip is taking too long. You can try another reply in a moment.");
+    } catch (e) {
+      if (!abort.signal.aborted && startupVersion.current === version) {
+        setError(e instanceof Error ? e.message : "Could not generate the talking clip.");
+        setClipStatus("");
+        const resume = resumeMicAfterClip.current; resumeMicAfterClip.current = false;
+        if (resume) try { await client.current?.startMic(); } catch { /* the user can restart the microphone */ }
+      }
+    }
+  };
+  const resumeCharacterClipMic = () => {
+    const resume = resumeMicAfterClip.current; resumeMicAfterClip.current = false;
+    setClipId(null); setClipStream(null); setClipStatus(""); setActivity(resume ? "listening" : "idle");
+    if (resume) void client.current?.startMic().catch(e => setError(e instanceof Error ? e.message : "Could not restart the microphone."));
   };
 
   useEffect(() => {
@@ -102,10 +170,7 @@ export default function App() {
     }).catch(() => { if (active) setError("Cannot reach the local server. Run npm run dev to start both servers."); });
     return () => { active = false; };
   }, []);
-  useEffect(() => () => { startupAbort.current?.abort(); void client.current?.close(); }, []);
-  useEffect(() => {
-    if (whiteboardRef.current) (whiteboardRef.current as HTMLElement & { inert: boolean }).inert = !whiteboardOpen;
-  }, [whiteboardOpen, lesson]);
+  useEffect(() => () => { startupAbort.current?.abort(); clipAbort.current?.abort(); void client.current?.close(); }, []);
   useEffect(() => {
     if (mode !== "avatar") return;
     let active = true;
@@ -114,16 +179,11 @@ export default function App() {
       .then(status => { if (active) setAvatarStatus(status); })
       .catch(e => { if (active) setAvatarError(e instanceof Error ? e.message : "Could not load avatar settings."); });
     void fetch("/api/avatar/presets").then(async r => { const data = await r.json(); if (!r.ok) throw new Error(data.error); return data; })
-      .then((catalog: AvatarCatalog) => {
+      .then(catalog => {
         if (!active) return;
-        catalogRef.current = catalog;
         setPresets(catalog.presets);
-        setAvatarId(avatarForStudent(catalog, studentRef.current));
-        setAvatarNotice(catalog.warning);
-        if (!studentNameCustomized.current) {
-          setStudentName(getStudentName(studentRef.current));
-        }
-      }).catch(e => { if (active) setAvatarError(e instanceof Error ? e.message : "Could not load Boson avatars."); });
+        setAvatarId(current => catalog.presets.some((p: { id: string }) => p.id === current) ? current : catalog.presets[0]?.id ?? "");
+      }).catch(e => { if (active) setAvatarError(e instanceof Error ? e.message : "Could not load Boson presets."); });
     return () => { active = false; };
   }, [mode, avatarReload]);
 
@@ -135,23 +195,21 @@ export default function App() {
     try {
       if (client.current) await client.current.close();
       if (version !== startupVersion.current) return;
-      const prepared = await prepareLesson(topic, mode === "mock", familiarity, studentName, instructorNotes, abort.signal, student);
+      const prepared = await prepareLesson(topic, mode === "mock", abort.signal);
       if (version !== startupVersion.current) return;
-      setLesson(prepared.lesson); setInstructorGuide(prepared.instructorGuide); setKnowledge(initialTopicKnowledge(prepared.lesson)); setTranscript(emptyTranscript); setLog([]); setEmotionLog([]); setCompletionDismissed(false); setWhiteboardOpen(false); setDeveloperOpen(false);
+      setLesson(prepared); setKnowledge(initialTopicKnowledge(prepared)); setTranscript(emptyTranscript); setLog([]);
       const callbacks: RealtimeCallbacks = {
-        tokenProvider: fetchToken, lesson: prepared.lesson, assessEvidence: lessonAssessor(prepared.lesson, prepared.instructorGuide), audioRenderer,
+        tokenProvider: fetchToken, lesson: prepared, characterId, learnerSettings, sourceMaterial, assessEvidence: lessonAssessor(prepared),
+        outputMode: isCharacterClipMode(mode) ? "text" : "audio",
+        onAssistantReply: isCharacterClipMode(mode) ? reply => { void makeCharacterClip(characterId, reply, version, learnerSettings.feedbackDirectness); } : undefined,
         onConnectionState: state => { if (version === startupVersion.current) setConnection(state); }, onActivity: activity => { if (version === startupVersion.current) setActivity(activity); },
-        onLog: entry => {
-          if (version !== startupVersion.current) return;
-          setLog(l => [...l.slice(-249), { ...entry, raw: entry.type.includes("audio.delta") || entry.type === "input_audio_buffer.append" ? "[audio chunk omitted]" : entry.raw }]);
-          if (entry.type === "client.emotion_used" || entry.type === "client.emotion_acknowledgment") setEmotionLog(events => [...events, entry]);
-        },
+        onLog: entry => { if (version === startupVersion.current) setLog(l => [...l.slice(-249), { ...entry, raw: entry.type.includes("audio.delta") || entry.type === "input_audio_buffer.append" ? "[audio chunk omitted]" : entry.raw }]); },
         onClose: info => { if (version === startupVersion.current) setError(info.code === 1000 ? null : info.message); },
         onError: message => { if (version === startupVersion.current) setError(message); }, onMicChange: active => { if (version === startupVersion.current) setMicActive(active); }, onMicLevel: level => { if (version === startupVersion.current) setMicLevel(level); },
         onKnowledgeChange: state => { if (version === startupVersion.current) setKnowledge(state); },
         onServerEvent: evt => { if (version === startupVersion.current) setTranscript(s => transcriptReducer(s, evt, Date.now())); },
       };
-      const next = mode === "avatar" ? new LiveAvatarClient(callbacks, avatarId, track => { if (version === startupVersion.current) setVideoTrack(track); }, audioRenderer) : mode === "mock" ? new MockClient(callbacks) : new RealtimeClient(callbacks);
+      const next = mode === "avatar" ? new LiveAvatarClient(callbacks, avatarId, track => { if (version === startupVersion.current) setVideoTrack(track); }, characterId) : mode === "mock" ? new MockClient(callbacks) : new RealtimeClient(callbacks);
       client.current = next;
       setPreparing(false);
       await next.connect();
@@ -169,44 +227,50 @@ export default function App() {
     finally { micBusy.current = false; setMicPending(false); }
   };
   const send = (value = text) => {
-    if (!value.trim() || !connected) return;
+    if (!value.trim() || !connected || (isCharacterClipMode(mode) && Boolean(clipStatus))) return;
     void client.current?.sendUserText(value.trim()); setText("");
   };
-  const end = () => { ++startupVersion.current; startupAbort.current?.abort(); setPreparing(false); client.current?.disconnect(); setConnection("closed"); setMicActive(false); setMicLevel(0); setVideoTrack(null); };
-  const newLesson = () => { end(); setLesson(null); setKnowledge({}); setTranscript(emptyTranscript); setInstructorGuide([]); setEmotionLog([]); setCompletionDismissed(false); setWhiteboardOpen(false); };
-  const completed = Boolean(lesson?.concepts.length && lesson.concepts.every(concept => knowledge[concept.id]?.status === "understood"));
-  const changeMode = (next: Mode) => { setMode(next); setError(null); setTranscript(emptyTranscript); setKnowledge({}); setLesson(null); setInstructorGuide([]); setEmotionLog([]); };
-  const modeLabel = mode === "avatar" ? "Boson talking avatar" : mode === "voice" ? "Boson voice + photo" : "Local mock";
-  const advancedControls = <>
-    <div className="field-group"><label htmlFor="conversation-mode">Conversation mode</label><select id="conversation-mode" value={mode} onChange={e => changeMode(e.target.value as Mode)} disabled={busy}><option value="avatar">Boson talking avatar</option><option value="voice">Boson voice + photo</option><option value="mock">Local mock (text only)</option></select></div>
-    {mode !== "mock" && <div className="field-group"><label htmlFor="speech-mode">Speech rendering</label><select id="speech-mode" value={audioRenderer} onChange={e => setAudioRenderer(e.target.value as AudioRenderer)} disabled={busy}><option value="realtime">Realtime audio</option><option value="tagged-tts">Emotion-tagged Higgs TTS</option></select></div>}
-    {mode === "avatar" && <div className="field-group avatar-field"><label htmlFor="avatar-preset">Avatar appearance</label><select id="avatar-preset" value={avatarId} onChange={e => setAvatarId(e.target.value)} disabled={busy || !presets.length}>{presets.length ? presets.map(p => <option value={p.id} key={p.id}>{p.name}{p.isPublic ? " · Preset" : " · Account avatar"}</option>) : <option>Loading avatars…</option>}</select>{selectedFace && <p>Live face: {selectedFace.name}</p>}{studentAppearance?.notice && studentAppearance.avatarId === avatarId && <p className="notice">{studentAppearance.notice}</p>}{avatarNotice && <p className="notice">{avatarNotice}</p>}{avatarStatus && !avatarStatus.configured && <p className="error">LiveKit setup is incomplete: {avatarStatus.missing.join(", ") || "BOSON_API_KEY"}.</p>}{avatarStatus && !avatarStatus.pythonInstalled && <p className="error">Run npm run avatar:setup once.</p>}{avatarError && <p className="error">{avatarError} <button type="button" onClick={() => setAvatarReload(value => value + 1)}>Retry</button></p>}</div>}
-  </>;
+  const end = () => { ++startupVersion.current; startupAbort.current?.abort(); clipAbort.current?.abort(); setPreparing(false); setClipId(null); setClipStream(null); setClipStatus(""); client.current?.disconnect(); setConnection("closed"); setMicActive(false); setMicLevel(0); setVideoTrack(null); };
+  const startingHunch = lesson?.concepts.find(c => c.initialBelief)?.initialBelief;
 
-  return <main className={`app ${lesson ? "classroom-view" : "setup-view"}`}>
-    <header className="topbar"><button className="brand" onClick={() => { if (!lesson) return; newLesson(); }}><span className="brand-mark">hı</span><span>HUMAN INTELLIGENCE<small>TEACHBACK</small></span></button><span className="project-tag">BOSON AI HACKATHON / 2026</span></header>
-    {!lesson ? <>
-      <LessonSetup topic={topic} onTopic={setTopic} studentName={studentName} onStudentName={value => { studentNameCustomized.current = true; setStudentName(value); }} student={student} onStudent={changeStudent} notes={instructorNotes} onNotesChange={setInstructorNotes} familiarity={familiarity} onFamiliarity={setFamiliarity} mockMode={mode === "mock"} disabled={busy} preparing={preparing} onStart={() => void start()} advancedControls={advancedControls} />
-      {configured === false && mode !== "mock" && <p className="setup-error notice" role="status">Boson voice credentials are not configured yet. Add them to <code>.env</code>, or choose Local mock in Advanced settings.</p>}
-      {error && <p className="setup-error error" role="alert">{error}</p>}
-      <footer>YOU TEACH. {studentName.toUpperCase()} LEARNS. YOU UNDERSTAND.<span>Powered by Boson Higgs Realtime</span></footer>
-    </> : <>
-      <header className="classroom-header"><div><button className="back-button" onClick={newLesson} aria-label="Start a new lesson">←</button><div><span>NOW TEACHING</span><h1>{lesson.topic}</h1><p>with {name}</p></div></div><div className="classroom-header-actions"><details className="lesson-settings-popover"><summary>Lesson settings</summary><div><strong>{modeLabel}</strong><span>{audioRenderer === "realtime" ? "Realtime speech" : "Emotion-tagged speech"}</span><span>{lesson.familiarity}% questioning</span><span>{selectedFace ? `${selectedFace.name} avatar` : `${name} profile`}</span></div></details><button onClick={connected || connection === "connecting" ? end : () => void start()}>{connected || connection === "connecting" ? "End session" : "Reconnect"}</button><button className="primary" onClick={newLesson}>New lesson</button></div></header>
-      {completed && !completionDismissed && <LessonCompletion lesson={lesson} state={knowledge} studentName={name} onReview={() => setCompletionDismissed(true)} onNewLesson={newLesson} />}
-      <div className="classroom-grid">
-        <section className="avatar-classroom-card" aria-label={`Live classroom with ${name}`}>
-          <div className="avatar-card-head"><div><span className={`dot ${connected ? "dot-open" : ""}`} /><strong>{name}</strong><small>{modeLabel}</small></div><span className="live-pill">{connected ? "LIVE" : connection === "connecting" ? "CONNECTING" : "OFFLINE"}</span></div>
-          <div className={`student-stage ${activity === "speaking" ? "speaking" : ""}`}>{mode === "avatar" ? <LiveAvatarVideo track={videoTrack} connecting={connection === "connecting"} name={name} /> : <AvatarPhoto name={name} />}</div>
-          <InteractionStatus connection={connection} activity={activity} micActive={micActive} micLevel={micLevel} name={name} hasError={Boolean(error)} />
-          <div className="classroom-controls">{mode !== "mock" && <MicButton active={micActive} level={micLevel} disabled={!connected || micPending} onToggle={() => void toggleMic()} />}<button className="whiteboard-launch" onClick={() => setWhiteboardOpen(true)}>✎ Open whiteboard</button></div>
-          {error && <p className="error classroom-error" role="alert">{error}</p>}
-        </section>
-        <LearningMap lesson={lesson} state={knowledge} preparing={preparing} studentName={name} instructorGuide={instructorGuide} emotionRecords={emotionRecords} />
-        <section className="conversation-workspace"><div className="transcript-wrap" aria-label="Conversation transcript"><TranscriptPanel state={transcript} topic={lesson.topic} name={name} collapsed={transcriptCollapsed} onToggle={() => setTranscriptCollapsed(value => !value)} /></div><form className="composer" onSubmit={e => { e.preventDefault(); send(); }}><input aria-label="Your explanation" value={text} onChange={e => setText(e.target.value)} placeholder={connected ? `Type an explanation for ${name}…` : "Reconnect to continue…"} disabled={!connected} /><button className="send" disabled={!connected || !text.trim()} aria-label="Send explanation">↑</button></form><div className="conversation-actions"><button disabled={!connected || activity === "thinking" || activity === "speaking"} onClick={() => send(`Can you teach back what I explained? Try a small example and tell me what still confuses you, ${name}.`)}>↗ Ask {name} to teach it back</button></div></section>
-      </div>
-      <aside ref={whiteboardRef} className={`whiteboard-workspace ${whiteboardOpen ? "open" : ""}`} aria-label="Classroom whiteboard" aria-hidden={!whiteboardOpen}><div className="whiteboard-workspace-head"><div><span>TEACHING TOOL</span><strong>Whiteboard</strong></div><div>{mode !== "mock" && <MicButton active={micActive} level={micLevel} disabled={!connected || micPending} onToggle={() => void toggleMic()} />}<button className="close-workspace" onClick={() => setWhiteboardOpen(false)}>Close ×</button></div></div><WhiteboardPanel sessionKey={lesson.id} ownerToken={lesson.whiteboardOwnerToken} active={connected} deliverObservation={deliverWhiteboard} diagnostics={developerOpen} experiment={new URLSearchParams(window.location.search).get("whiteboardTest") === "1"} /></aside>
-      <details className="developer-panel" open={developerOpen} onToggle={event => setDeveloperOpen(event.currentTarget.open)}><summary>Developer &amp; diagnostics <span>{log.length} events</span></summary><div className="developer-panel-body"><div><strong>Connection</strong><p>{connection} · {activity} · {modeLabel}</p></div><div><strong>Whiteboard vision</strong><p>{whiteboardOpen ? "Open the whiteboard to inspect capture and latency diagnostics." : "Open the whiteboard, then return here to enable diagnostics."}</p></div><DebugDrawer entries={log} embedded /></div></details>
-      <footer>YOU TEACH. {name.toUpperCase()} LEARNS. YOU UNDERSTAND.<span>Powered by Boson Higgs Realtime</span></footer>
-    </>}
+  return <main className="app">
+    <header className="topbar"><a className="brand" href="/"><span className="brand-mark">hı</span> HUMAN INTELLIGENCE</a><span className="project-tag">BOSON AI HACKATHON / 2026</span></header>
+    <section className="intro"><div><p className="eyebrow">LEARN BY EXPLAINING</p><h1>A little teaching.<br /><em>A deeper understanding.</em></h1><p className="lede">Meet {character.name}, your AI student. Make a tricky idea click by explaining it in your own words.</p></div><div className="lesson-tag"><span>YOUR CLASSROOM</span><strong>{lesson?.topic || topic.trim() || "Your next lesson"}</strong><span>Any topic. Your explanation.</span></div></section>
+    <LessonSetup topic={topic} onTopic={setTopic} experienceMode={experienceMode} onExperienceMode={next => { setExperienceMode(next); const nextCharacter: CharacterId = next === "study" ? "maya" : "kevin"; setCharacterId(nextCharacter); setClipId(null); setClipStream(null); setClipStatus(""); setMode(next === "fun" ? "character-clips" : "avatar"); }} characterId={characterId} onCharacter={id => { setCharacterId(id); setClipId(null); setClipStream(null); setClipStatus(""); if (hasBundledTalkingPortrait(id)) setMode("character-clips"); else if (isCharacterClipMode(mode)) setMode("avatar"); }} settings={learnerSettings} onSettings={value => { setLearnerSettings(value); if (client.current instanceof RealtimeClient) client.current.updateLearnerSettings(value, sourceMaterial); else if (client.current instanceof LiveAvatarClient) void client.current.updateLearnerSettings(value, sourceMaterial); }} sourceMaterialName={sourceMaterialName} onSourceMaterial={(name, value) => { setSourceMaterialName(name); setSourceMaterial(value); }} disabled={busy} preparing={preparing} onStart={() => void start()} />
+    <div className="workspace">
+      <section className="conversation-card" aria-label={`Conversation with ${character.name}`}>
+          <div className="card-head"><div><span className={`dot ${connected ? "dot-open" : ""}`} /><strong>{character.name}</strong><span className="subtle">{character.description}</span></div><span className="pill">{mode === "avatar" ? "HIGGS AVATAR + REALTIME" : isCharacterClipMode(mode) ? "HIGGS TTS + GENERATED CLIPS" : mode === "mock" ? "LOCAL MOCK · TEXT ONLY" : "HIGGS REALTIME"}</span></div>
+        <div className="controls">
+          <div className="session-controls"><select aria-label="Conversation mode" value={mode} onChange={e => { setMode(e.target.value as Mode); setError(null); setTranscript(emptyTranscript); setKnowledge({}); setLesson(null); setClipId(null); setClipStream(null); setClipStatus(""); }} disabled={busy}><option value="avatar">Boson talking avatar</option><option value="voice">Boson voice + photo</option>{hasBundledTalkingPortrait(characterId) && <option value="character-clips">{character.name} talking clips</option>}<option value="mock">Local mock (text only)</option></select>
+          {!busy ? <button className="primary" disabled={!topic.trim() || (mode === "avatar" && (!avatarStatus?.configured || !presets.length)) || (isCharacterClipMode(mode) && !configured)} onClick={() => void start()}>Start lesson <span>↗</span></button> : <button onClick={end}>{preparing ? "Cancel lesson setup" : connection === "connecting" ? "Cancel connection" : "End lesson"}</button>}</div>
+          {mode !== "mock" && <MicButton active={micActive} level={micLevel} disabled={!connected || micPending || (isCharacterClipMode(mode) && Boolean(clipStatus))} onToggle={() => void toggleMic()} />}
+          {configured === false && mode === "voice" && <p className="notice">Add BOSON_API_KEY to .env and restart the server for live voice, or select Local mock to explore.</p>}
+          {mode === "avatar" && <div className="avatar-setup">
+            <label htmlFor="avatar-preset">Student avatar</label><select id="avatar-preset" value={avatarId} onChange={e => setAvatarId(e.target.value)} disabled={busy || !presets.length}>{presets.length ? presets.map(p => <option value={p.id} key={p.id}>{p.name}</option>) : <option>Loading Boson presets…</option>}</select>
+            <p className="character-note">{characterId === "baby-yoda" ? "Choose a registered Boson avatar here. Uploading a photo in voice + photo mode only displays a still image; a custom live face must first be enabled for your Boson API key." : "The selected character changes the learner’s personality. Live faces come from avatars enabled for your Boson API key."}</p>
+            {avatarStatus && !avatarStatus.configured && <div className="notice"><strong>Connect LiveKit Cloud to start the talking avatar.</strong><p>Create a project at <a href="https://cloud.livekit.io" target="_blank" rel="noreferrer">LiveKit Cloud</a>, then add these missing settings to your local .env and restart npm run dev:</p><code>{avatarStatus.missing.length ? avatarStatus.missing.join(", ") : "BOSON_API_KEY"}</code><p>You can choose “Boson voice + photo” while setting this up.</p></div>}
+            {avatarStatus && !avatarStatus.pythonInstalled && <p className="notice">Install the avatar agent once with <code>npm run avatar:setup</code> (Python 3.10+).</p>}
+            {avatarError && <div className="error" role="alert"><p>{avatarError}</p><button type="button" disabled={busy} onClick={() => setAvatarReload(value => value + 1)}>Retry avatar setup</button></div>}
+          </div>}
+          {error && <p className="error" role="alert">{error}</p>}
+        </div>
+        <div className={`student-stage ${activity === "speaking" ? "speaking" : ""}`}>
+          <div className="stage-label">{mode === "avatar" ? "LIVE AVATAR CLASSROOM" : isCharacterClipMode(mode) ? `${character.name.toUpperCase()} TALKING CLIPS` : mode === "mock" ? "UI DEVELOPMENT MODE" : "VOICE CLASSROOM"}</div>
+          {mode === "avatar" ? <LiveAvatarVideo track={videoTrack} connecting={connection === "connecting"} name={character.name} /> : <AvatarPhoto name={character.name} characterId={characterId} photoSentToProvider={isCharacterClipMode(mode)} disabled={busy} videoSrc={isCharacterClipMode(mode) && clipId ? `/api/avatar/character-videos/${clipId}/content` : undefined} videoStream={isCharacterClipMode(mode) ? clipStream : null} clipPreparing={isCharacterClipMode(mode) && Boolean(clipStatus) && !clipId && !clipStream} onClipPlaying={() => setActivity("speaking")} onClipEnded={resumeCharacterClipMic} onClipError={message => { setError(message ?? "Could not play the generated clip. Check your connection and retry."); resumeCharacterClipMic(); }} />}
+          <h2>{isCharacterClipMode(mode) ? `Your turn, then ${character.name} replies.` : "Let’s figure it out together."}</h2><p>{isCharacterClipMode(mode) && clipStatus ? clipStatus : connected ? (mode === "mock" ? "Type an explanation below to try the learning flow." : activity === "speaking" ? `${character.name} is speaking… You can interrupt.` : activity === "thinking" ? (isCharacterClipMode(mode) ? "Thinking of a reply…" : `${character.name} is thinking…`) : micActive ? `${character.name} is listening. Go ahead.` : "Turn on your microphone and say hello.") : preparing ? `Getting ${character.name} ready to learn your topic…` : lesson?.openingQuestion ?? `Choose a topic and help ${character.name} make sense of it.`}</p>
+          <div className="avatar-note">{isCharacterClipMode(mode) ? `The included ${character.name} portrait is ready. Speak or type; Boson generates a moving clip for each reply. Upload another picture in this panel to change the look.` : mode === "avatar" ? characterId === "baby-yoda" ? "Live preset mode uses the selected Boson face. Choose Baby Yoda talking clips to animate the Baby Yoda portrait." : "Boson renders the face and speech together in LiveKit." : characterId === "baby-yoda" ? "Baby Yoda’s portrait is a still image here. Choose Baby Yoda talking clips to animate it." : "Photo mode · Live animation is available in Boson talking avatar mode."}</div>
+        </div>
+        <div className="transcript-wrap" aria-label="Conversation transcript"><TranscriptPanel state={transcript} topic={lesson?.topic} speakerName={character.name} /></div>
+        <form className="composer" onSubmit={e => { e.preventDefault(); send(); }}><input aria-label="Your explanation" value={text} onChange={e => setText(e.target.value)} placeholder={connected ? "Or type your explanation here…" : `Start a lesson to talk with ${character.name}…`} disabled={!connected || (isCharacterClipMode(mode) && Boolean(clipStatus))} /><button className="send" disabled={!connected || !text.trim() || (isCharacterClipMode(mode) && Boolean(clipStatus))} aria-label="Send explanation">↑</button></form>
+        <div className="conversation-actions"><button className="link" disabled={!connected || activity === "thinking" || activity === "speaking" || (isCharacterClipMode(mode) && Boolean(clipStatus))} onClick={() => send("Can you teach back what I explained? Try a small example and tell me what still confuses you.")}>Ask {character.name} to teach back ↗</button></div>
+      </section>
+      <aside className="sidebar">
+        <LearningMap lesson={lesson} state={knowledge} preparing={preparing} studentName={character.name} />
+        <section className="hint-card"><span className="spark">✳</span><p className="eyebrow">{startingHunch ? `${character.name.toUpperCase()}’S STARTING HUNCH` : "A PLACE TO START"}</p><h3>{startingHunch ? `“${startingHunch}”` : lesson?.openingQuestion ?? "What’s the big idea?"}</h3><p>{startingHunch ? `Help ${character.name} reason through this idea. Explain why, then try an example together.` : "Start with the main idea in plain language. Build on it one explanation at a time."}</p><div className="hint-divider" /><p className="fine-print">Ask {character.name} to explain it back in a new example.</p></section>
+        <a className="avatar-link" href="https://docs.boson.ai/models/higgs-avatar/realtime-sessions" target="_blank" rel="noreferrer">Boson live avatar setup guide ↗</a>
+      </aside>
+    </div>
+    <footer>YOU TEACH. {character.name.toUpperCase()} LEARNS. YOU UNDERSTAND.<span>Powered by Boson Higgs Realtime</span></footer>
+    <DebugDrawer entries={log} />
   </main>;
 }

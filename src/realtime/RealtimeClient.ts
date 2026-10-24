@@ -10,23 +10,23 @@ import {
   type CloseInfo,
   type ServerEvent,
 } from "./events";
-import { buildSessionConfig, studentPrompt, SYSTEM_PROMPT } from "./sessionConfig";
-import { VisualContextChannel } from "../whiteboard/contextChannel";
-import type { VisualContext } from "../whiteboard/observations";
+import { buildSessionConfig } from "./sessionConfig";
+import { formatBabySpeech } from "../state/babySpeech";
+import { formatKevinSpeech, isKevinConcentrationCommand, kevinPlayModeReply } from "../state/kevinSpeech";
 import { RingPlayer } from "../audio/playback";
 import { MicCapture } from "../audio/capture";
 import { dispatch as dispatchTool } from "../tools/registry";
 import { CLIENT_TOOL_RESULT } from "../state/transcriptStore";
-import type { KnowledgeState, ToolResult } from "../state/knowledge";
+import type { KnowledgeState } from "../state/knowledge";
 import { createKnowledgeTracker, type KnowledgeContext } from "../state/createKnowledgeTracker";
 import type { LessonDefinition, EvidenceAssessor } from "../state/lesson";
-import { studentToolFeedback } from "../state/topicKnowledge";
 import { buildRealtimeUrl, type RealtimeCredentials } from "./runtimeConfig";
-import { buildTaggedSpeechInput, chooseSpeechEmotion, cleanSpokenTranscript } from "./speechTags";
-import { EmotionAcknowledgmentTracker } from "./emotionAcknowledgment";
+import type { CharacterId } from "../state/characters";
+import { DEFAULT_LEARNER_SETTINGS, type LearnerSettings } from "../state/learnerSettings";
+import { VisualContextChannel } from "../whiteboard/contextChannel";
+import type { VisualContext } from "../whiteboard/observations";
 
 export type ConnectionState = "idle" | "connecting" | "open" | "closing" | "closed";
-export type AudioRenderer = "realtime" | "tagged-tts";
 
 /** Coarse state for the status bar. */
 export type Activity = "idle" | "listening" | "thinking" | "speaking";
@@ -52,10 +52,15 @@ export interface RealtimeCallbacks {
   /** Mints a fresh ephemeral key for each connection. Required. */
   tokenProvider: () => Promise<RealtimeCredentials>;
   lesson?: LessonDefinition;
+  characterId?: CharacterId;
+  learnerSettings?: LearnerSettings;
+  sourceMaterial?: string;
   assessEvidence?: EvidenceAssessor;
   onKnowledgeChange?: (state: KnowledgeState) => void;
+  outputMode?: "audio" | "text";
+  /** Called with a completed text reply when using text output for a generated avatar clip. */
+  onAssistantReply?: (text: string) => void;
   onError?: (message: string) => void;
-  audioRenderer?: AudioRenderer;
 }
 
 let logSeq = 0;
@@ -65,7 +70,6 @@ let logSeq = 0;
  * React components never touch the socket — they render what this reports.
  */
 export class RealtimeClient {
-  private visualContext: VisualContextChannel | null = null;
   private ws: WebSocket | null = null;
   private state: ConnectionState = "idle";
   private player: RingPlayer;
@@ -75,12 +79,10 @@ export class RealtimeClient {
   private turnEpoch = 0;
   private generation = 0;
   private sessionReady = false;
-  private taggedAudioPending = false;
-  private taggedAudioStarted = false;
-  private taggedAudioPlaying = false;
-  private taggedAudioAbort: AbortController | null = null;
-  private taggedItems = new Set<string>();
-  private emotionAcknowledgment: EmotionAcknowledgmentTracker;
+  private assistantReplyText = "";
+  private kevinLearningStarted = false;
+  private kevinPlayReplyCount = 0;
+  private visualContext: VisualContextChannel | null = null;
 
   /**
    * The assistant item currently producing audio. This is what we truncate on
@@ -105,7 +107,7 @@ export class RealtimeClient {
    * own function_call_output, but there must be exactly ONE response.create
    * afterwards — so the batch is collected here and flushed together.
    */
-  private toolBatch: { promises: Promise<void>[]; outputs: ClientEvent[]; epoch: number } | null = null;
+  private toolBatch: { promises: Promise<void>[]; outputs: ClientEvent[] } | null = null;
 
   /**
    * ⚠ The single most important line in this file.
@@ -123,16 +125,13 @@ export class RealtimeClient {
    * including a user double-clicking the button.
    */
   private connecting = false;
+  private model = "";
 
   constructor(callbacks: RealtimeCallbacks) {
     this.cb = callbacks;
-    this.emotionAcknowledgment = new EmotionAcknowledgmentTracker(result => this.log("info", result.type, result));
     this.knowledge = createKnowledgeTracker(callbacks.onKnowledgeChange, callbacks.lesson, callbacks.assessEvidence);
     this.player = new RingPlayer((speaking) => {
-      if (!speaking) {
-        this.taggedAudioPlaying = false;
-        this.setActivity(this.taggedAudioPending ? "thinking" : this.capture?.active ? "listening" : "idle");
-      }
+      if (!speaking) this.setActivity(this.capture?.active ? "listening" : "idle");
     });
     this.capture = new MicCapture(
       (base64) => this.send(inputAudioAppend(base64)),
@@ -150,7 +149,7 @@ export class RealtimeClient {
 
   /** Start streaming microphone audio. Throws if permission is denied. */
   async startMic(): Promise<void> {
-    if (!this.sessionReady) throw new Error("Wait for your student to connect before enabling the microphone.");
+    if (!this.sessionReady) throw new Error("Wait for the student to connect before enabling the microphone.");
     try { await this.capture.start(); }
     catch (error) { await this.capture.stop(); throw error; }
     if (!this.sessionReady) { await this.capture.stop(); return; }
@@ -180,9 +179,6 @@ export class RealtimeClient {
     this.handledCallIds.clear();
     this.toolBatch = null;
     this.currentAssistantItemId = null;
-    this.taggedItems.clear();
-    this.taggedAudioPending = false;
-    this.taggedAudioStarted = false;
     this.setState("connecting");
 
     // Must happen inside the user gesture that triggered this call, or the
@@ -202,6 +198,7 @@ export class RealtimeClient {
       return;
     }
     if (generation !== this.generation) return;
+    this.model = credentials.model;
 
     // A browser cannot set headers on a WebSocket handshake, so there is no
     // `Authorization` header to use. The API takes the credential as a
@@ -209,18 +206,16 @@ export class RealtimeClient {
     // carries the ephemeral key.
     const ws = new WebSocket(websocketUrl, ["realtime", `bai-client-secret.${credentials.value}`]);
     this.ws = ws;
-    this.visualContext = new VisualContextChannel(this.cb.lesson ? studentPrompt(this.cb.lesson) : SYSTEM_PROMPT, event => this.send(event));
 
     ws.onopen = () => {
       if (generation !== this.generation) return;
       this.connecting = false;
       this.info("Socket open — sending session.update.");
-      this.send(buildSessionConfig(credentials.model, this.cb.lesson));
+      this.send(buildSessionConfig(credentials.model, this.cb.lesson, this.cb.characterId, this.cb.outputMode, this.cb.learnerSettings ?? DEFAULT_LEARNER_SETTINGS, this.cb.sourceMaterial));
     };
     ws.onmessage = (ev) => { if (generation === this.generation) this.onMessage(ev); };
     ws.onerror = () => this.info("WebSocket error — the close code below has the detail.");
     ws.onclose = (ev) => {
-      this.visualContext?.close(); this.visualContext = null;
       if (generation !== this.generation) return;
       this.connecting = false;
       this.sessionReady = false;
@@ -236,11 +231,12 @@ export class RealtimeClient {
   }
 
   disconnect(): void {
-    this.visualContext?.close(); this.visualContext = null;
     ++this.generation;
     this.connecting = false;
     this.sessionReady = false;
     this.toolBatch = null;
+    this.visualContext?.close();
+    this.visualContext = null;
     if (this.ws && (this.state === "open" || this.state === "connecting")) {
       this.setState("closing");
       this.ws.close(1000, "client disconnect");
@@ -248,10 +244,6 @@ export class RealtimeClient {
       this.setState("closed");
     }
     this.ws = null;
-    this.taggedAudioAbort?.abort();
-    this.taggedAudioAbort = null;
-    this.taggedAudioPending = false;
-    this.taggedAudioPlaying = false;
     this.setState("closed");
     void this.player.flush();
     this.setActivity("idle");
@@ -265,7 +257,9 @@ export class RealtimeClient {
       return;
     }
     const item_id = `typed-${Date.now()}-${++logSeq}`;
-    this.knowledge.observeHuman(item_id, text);
+    const wasLearning = this.kevinLearningStarted;
+    this.activateKevinLearning(text);
+    if (this.cb.characterId !== "kevin" || wasLearning) this.knowledge.observeHuman(item_id, text);
     this.cb.onServerEvent?.({ type: SERVER.transcriptionCompleted, item_id, transcript: text });
     this.send(userTextItem(text));
     // Adding the message does not start a turn. This does.
@@ -279,8 +273,17 @@ export class RealtimeClient {
     this.log("send", evt.type, evt);
   }
 
+  updateLearnerSettings(settings: LearnerSettings, sourceMaterial = ""): void {
+    this.cb.learnerSettings = settings;
+    this.cb.sourceMaterial = sourceMaterial;
+    if (this.model && this.sessionReady) this.send(buildSessionConfig(this.model, this.cb.lesson, this.cb.characterId, this.cb.outputMode, settings, sourceMaterial, this.kevinLearningStarted));
+  }
+
   updateWhiteboard(context: VisualContext) {
-    if (!this.sessionReady || !this.visualContext) return Promise.reject(new Error("Start the voice conversation before sharing the board."));
+    const config = buildSessionConfig(this.model, this.cb.lesson, this.cb.characterId, this.cb.outputMode, this.cb.learnerSettings ?? DEFAULT_LEARNER_SETTINGS, this.cb.sourceMaterial);
+    const session = (config as { session?: { instructions?: unknown } }).session;
+    const instructions = typeof session?.instructions === "string" ? session.instructions : "";
+    if (!this.visualContext) this.visualContext = new VisualContextChannel(instructions, event => this.send(event));
     return this.visualContext.update(context);
   }
 
@@ -301,14 +304,28 @@ export class RealtimeClient {
       return;
     }
 
+    if (this.cb.characterId === "baby-yoda" && this.cb.outputMode === "text" && evt.type === SERVER.outputTextDone && typeof evt.text === "string") {
+      evt = { ...evt, text: formatBabySpeech(evt.text) };
+    }
+    if (this.cb.characterId === "kevin" && this.cb.outputMode === "text" && evt.type === SERVER.outputTextDone && typeof evt.text === "string") {
+      evt = { ...evt, text: this.kevinLearningStarted ? formatKevinSpeech(evt.text) : kevinPlayModeReply(this.kevinPlayReplyCount++) };
+    }
+
     // Log first, act second. Everything the server says shows up in the drawer,
     // including the events no branch below handles.
     this.log("recv", evt.type, evt);
     this.visualContext?.handle(evt);
-    this.cb.onServerEvent?.(evt);
+    const hideKevinPlayDelta = this.cb.characterId === "kevin"
+      && this.cb.outputMode === "text"
+      && !this.kevinLearningStarted
+      && evt.type === SERVER.outputTextDelta;
+    if (!hideKevinPlayDelta) this.cb.onServerEvent?.(evt);
+    if (!hideKevinPlayDelta && evt.type === SERVER.outputTextDelta && typeof evt.delta === "string") this.assistantReplyText += evt.delta;
+    if (evt.type === SERVER.outputTextDone && typeof evt.text === "string") this.assistantReplyText = evt.text;
     if (evt.type === SERVER.transcriptionCompleted && typeof evt.item_id === "string" && typeof evt.transcript === "string") {
-      this.knowledge.observeHuman(evt.item_id, evt.transcript);
-      this.emotionAcknowledgment.observeTeacher(evt.transcript);
+      const wasLearning = this.kevinLearningStarted;
+      this.activateKevinLearning(evt.transcript);
+      if (this.cb.characterId !== "kevin" || wasLearning) this.knowledge.observeHuman(evt.item_id, evt.transcript);
     }
 
     switch (evt.type) {
@@ -322,12 +339,9 @@ export class RealtimeClient {
         // A new assistant turn. Zero the played-sample counter so the truncate
         // maths below measures into *this* reply, not the whole session.
         this.player.reset();
-        this.taggedAudioAbort?.abort();
-        this.taggedAudioPending = this.cb.audioRenderer === "tagged-tts";
-        this.taggedAudioStarted = false;
         this.toolBatch = null;
+        this.assistantReplyText = "";
         this.setActivity("thinking");
-        this.info(`AI response started${responseId(evt) ? ` (${responseId(evt)})` : ""}.`);
         break;
 
       case SERVER.functionCallArgsDone:
@@ -336,24 +350,15 @@ export class RealtimeClient {
 
       case SERVER.responseDone:
         this.onResponseDone(evt);
-        this.info(`AI response finished${responseId(evt) ? ` (${responseId(evt)})` : ""} with status ${responseStatus(evt) ?? "unknown"}.`);
-        break;
-
-      case SERVER.audioTranscriptDone:
-        if (this.cb.audioRenderer === "tagged-tts" && typeof evt.transcript === "string") {
-          void this.playTaggedTranscript(evt);
-        }
         break;
 
       case SERVER.speechStarted:
         ++this.turnEpoch;
         // The user started talking over the model. This is the barge-in path.
-        this.info(`User speech detected${typeof evt.item_id === "string" ? ` (${evt.item_id})` : ""}; interruption handling started.`);
         void this.handleBargeIn();
         break;
 
       case SERVER.speechStopped:
-        this.info(`User speech ended${typeof evt.item_id === "string" ? ` (${evt.item_id})` : ""}.`);
         this.setActivity("thinking");
         break;
 
@@ -370,10 +375,8 @@ export class RealtimeClient {
         const b64 = evt.delta;
         if (typeof b64 === "string" && b64.length > 0) {
           if (typeof evt.item_id === "string") this.currentAssistantItemId = evt.item_id;
-          if (this.cb.audioRenderer !== "tagged-tts") {
-            this.player.enqueueBase64(b64);
-            this.setActivity("speaking");
-          }
+          this.player.enqueueBase64(b64);
+          this.setActivity("speaking");
         }
         break;
       }
@@ -422,7 +425,7 @@ export class RealtimeClient {
     if (this.handledCallIds.has(callId)) return;
     this.handledCallIds.add(callId);
 
-    if (!this.toolBatch) this.toolBatch = { promises: [], outputs: [], epoch: this.turnEpoch };
+    if (!this.toolBatch) this.toolBatch = { promises: [], outputs: [] };
     const batch = this.toolBatch;
     const generation = this.generation;
     const startedAt = Date.now();
@@ -430,7 +433,9 @@ export class RealtimeClient {
     const p = (async () => {
       let result: unknown;
       try {
-        result = await dispatchTool(name, args, this.knowledge);
+        result = this.cb.characterId === "kevin" && !this.kevinLearningStarted
+          ? { error: "learning_not_activated", summary: "Kevin is still in playful mode. No learning was recorded; wait until the user gives the concentration cue." }
+          : await dispatchTool(name, args, this.knowledge);
       } catch (e) {
         // A thrown handler must still produce an output, or the model waits
         // forever for a call_id that never comes back.
@@ -446,13 +451,18 @@ export class RealtimeClient {
         result,
         ms: Date.now() - startedAt,
       });
-      const output = this.cb.lesson && isToolResult(result)
-        ? studentToolFeedback(this.cb.lesson, result)
-        : JSON.stringify(result);
-      batch.outputs.push(functionCallOutput(callId, output));
+      batch.outputs.push(functionCallOutput(callId, JSON.stringify(result)));
     })();
 
     batch.promises.push(p);
+  }
+
+  private activateKevinLearning(text: string): void {
+    if (this.cb.characterId !== "kevin" || this.kevinLearningStarted || !isKevinConcentrationCommand(text)) return;
+    this.kevinLearningStarted = true;
+    if (this.model && this.sessionReady) {
+      this.send(buildSessionConfig(this.model, this.cb.lesson, this.cb.characterId, this.cb.outputMode, this.cb.learnerSettings ?? DEFAULT_LEARNER_SETTINGS, this.cb.sourceMaterial, true));
+    }
   }
 
   /**
@@ -473,106 +483,19 @@ export class RealtimeClient {
         } catch {
           /* handled above */
         }
-
         this.startToolCall(item.call_id, item.name, args);
       }
     }
 
-    if (this.cb.audioRenderer === "tagged-tts" && this.taggedAudioPending && !this.taggedAudioStarted) {
-      this.taggedAudioPending = false;
+    if (this.cb.outputMode === "text" && this.assistantReplyText.trim()) {
+      const reply = this.assistantReplyText.trim();
+      this.assistantReplyText = "";
+      this.cb.onAssistantReply?.(reply);
     }
-    if (this.toolBatch && this.toolBatch.promises.length > 0) {
-      void this.flushToolBatch(responseStatus(evt));
-    } else if (!this.taggedAudioPending && !this.taggedAudioPlaying) {
-      this.setActivity(this.capture.active ? "listening" : "idle");
-    }
-  }
 
-  private async playTaggedTranscript(evt: ServerEvent): Promise<void> {
-    if (typeof evt.transcript !== "string") return;
-    const transcript = cleanSpokenTranscript(evt.transcript).trim();
-    const itemId = typeof evt.item_id === "string" ? evt.item_id : null;
-    if (!transcript || (itemId && this.taggedItems.has(itemId))) return;
-    if (itemId) {
-      this.taggedItems.add(itemId);
-      this.currentAssistantItemId = itemId;
-    }
-    const generation = this.generation;
-    const turn = this.turnEpoch;
-    const emotion = chooseSpeechEmotion();
-    const taggedInput = emotion ? buildTaggedSpeechInput(transcript, emotion) : transcript;
-    const abort = new AbortController();
-    this.taggedAudioAbort?.abort();
-    this.taggedAudioAbort = abort;
-    this.taggedAudioPending = true;
-    this.taggedAudioStarted = true;
-    this.setActivity("thinking");
-    this.info(`Tagged TTS selected ${taggedInput.slice(0, taggedInput.indexOf(transcript))}`);
-    try {
-      const response = await fetch("/api/speech", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: transcript, emotion }),
-        signal: abort.signal,
-      });
-      if (!response.ok) {
-        let message = `Tagged speech synthesis failed (${response.status}).`;
-        try {
-          const body = await response.json() as { error?: string };
-          if (typeof body.error === "string") message = body.error;
-        } catch { /* Keep the status-based error when the response is not JSON. */ }
-        throw new Error(message);
-      }
-      if (!response.body) throw new Error("Boson returned no tagged speech audio stream.");
-      const reader = response.body.getReader();
-      let remainder = new Uint8Array(0);
-      let receivedAudio = false;
-      let emotionRecorded = false;
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (generation !== this.generation || turn !== this.turnEpoch || abort.signal.aborted) {
-            await reader.cancel();
-            return;
-          }
-          if (done) break;
-          if (!value?.length) continue;
-          const combined = new Uint8Array(remainder.length + value.length);
-          combined.set(remainder);
-          combined.set(value, remainder.length);
-          const completeLength = combined.length - (combined.length % 2);
-          if (completeLength > 0) {
-            this.player.enqueuePcm(combined.slice(0, completeLength).buffer);
-            receivedAudio = true;
-            if (!emotionRecorded) {
-              if (emotion) {
-                this.emotionAcknowledgment.noteEmotion(emotion, itemId ?? undefined);
-                this.log("info", "client.emotion_used", { emotion, item_id: itemId, transcript, tags: taggedInput.slice(0, taggedInput.indexOf(transcript)) });
-              } else {
-                this.log("info", "client.emotion_not_selected", { item_id: itemId, transcript });
-              }
-              emotionRecorded = true;
-            }
-            this.taggedAudioPlaying = true;
-            this.setActivity("speaking");
-          }
-          remainder = combined.slice(completeLength);
-        }
-      } finally {
-        reader.releaseLock();
-      }
-      if (remainder.length) throw new Error("Boson returned an incomplete PCM audio sample.");
-      if (!receivedAudio) throw new Error("Boson returned an empty tagged speech audio stream.");
-      this.taggedAudioPending = false;
-      this.info(`Tagged TTS audio ready (${emotion}).`);
-    } catch (error) {
-      if (abort.signal.aborted) return;
-      this.taggedAudioPending = false;
-      this.taggedAudioPlaying = false;
-      void this.player.flush();
-      const message = error instanceof Error ? error.message : "Could not synthesize tagged speech.";
-      this.info(message);
-      this.cb.onError?.(message);
+    if (this.toolBatch && this.toolBatch.promises.length > 0) {
+      void this.flushToolBatch();
+    } else {
       this.setActivity(this.capture.active ? "listening" : "idle");
     }
   }
@@ -585,9 +508,10 @@ export class RealtimeClient {
    * a call_id it never hears back about. Send response.create per tool instead
    * of once, and you get two replies talking over each other.
    */
-  private async flushToolBatch(status?: string): Promise<void> {
+  private async flushToolBatch(): Promise<void> {
     const batch = this.toolBatch;
     const generation = this.generation;
+    const epoch = this.turnEpoch;
     this.toolBatch = null;
     if (!batch || batch.promises.length === 0) return;
 
@@ -604,11 +528,7 @@ export class RealtimeClient {
     for (const out of batch.outputs) this.send(out);
 
     // A newer human turn must not be interrupted by a delayed assessment.
-    if (batch.epoch === this.turnEpoch && status !== "cancelled" && status !== "failed") {
-      this.send(responseCreate());
-    } else {
-      this.info(`Tool continuation suppressed (${status ?? "superseded turn"}).`);
-    }
+    if (epoch === this.turnEpoch) this.send(responseCreate());
   }
 
   /**
@@ -629,15 +549,10 @@ export class RealtimeClient {
    * the server's own VAD starts the new user turn.
    */
   private async handleBargeIn(): Promise<void> {
-    this.taggedAudioAbort?.abort();
-    this.taggedAudioPending = false;
-    this.taggedAudioPlaying = false;
     this.setActivity("listening");
     const playedMs = await this.player.flush();
-    this.info(`Audio playback cleared at ${Math.round(playedMs)} ms.`);
     if (this.currentAssistantItemId && playedMs > 0) {
       this.send(truncateItem(this.currentAssistantItemId, playedMs));
-      this.info(`Interrupted assistant item truncated (${this.currentAssistantItemId}).`);
     }
     this.currentAssistantItemId = null;
   }
@@ -658,18 +573,4 @@ export class RealtimeClient {
   private log(dir: LogEntry["dir"], type: string, raw: unknown): void {
     this.cb.onLog?.({ id: ++logSeq, dir, type, at: Date.now(), raw });
   }
-}
-
-function isToolResult(value: unknown): value is ToolResult {
-  return Boolean(value && typeof value === "object" && "summary" in value);
-}
-
-function responseId(evt: ServerEvent): string | undefined {
-  const id = (evt.response as { id?: unknown } | undefined)?.id;
-  return typeof id === "string" ? id : undefined;
-}
-
-function responseStatus(evt: ServerEvent): string | undefined {
-  const status = (evt.response as { status?: unknown } | undefined)?.status;
-  return typeof status === "string" ? status : undefined;
 }
