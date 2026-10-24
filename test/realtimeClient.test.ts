@@ -28,7 +28,7 @@ describe("reused Boson client with Alex's learning tool", () => {
   it("waits for session acknowledgement and prevents duplicate connects", async () => {
     const { client } = make(); await client.connect(); await client.connect();
     expect(FakeSocket.instances).toHaveLength(1); expect(client.connectionState).toBe("connecting");
-    await expect(client.startMic()).rejects.toThrow("Wait for Alex");
+    await expect(client.startMic()).rejects.toThrow("Wait for your student");
     const ws = FakeSocket.instances[0]; ws.onopen?.();
     expect(ws.sent[0].type).toBe("session.update");
     expect(new URL(ws.url).searchParams.get("model")).toBe(credentials.model);

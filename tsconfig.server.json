@@ -20,10 +20,12 @@
     "src/realtime/runtimeConfig.ts",
     "src/realtime/avatarToolBridge.ts",
     "src/realtime/catalogCache.ts",
+    "src/realtime/avatarCatalog.ts",
     "src/state/transcriptStore.ts",
     "src/tools/**/*.ts",
     "src/state/knowledge.ts",
     "src/state/lesson.ts",
+    "src/state/student.ts",
     "src/state/topicKnowledge.ts",
     "src/state/createKnowledgeTracker.ts"
   ]

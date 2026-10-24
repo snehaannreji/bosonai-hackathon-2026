@@ -16,6 +16,8 @@ import { AvatarPhoto } from "./ui/AvatarPhoto";
 import { LiveAvatarClient } from "./realtime/LiveAvatarClient";
 import { LiveAvatarVideo } from "./ui/LiveAvatarVideo";
 import type { RemoteVideoTrack } from "livekit-client";
+import { avatarForStudent, studentAvatarSelection, type AvatarCatalog, type AvatarOption } from "./realtime/avatarCatalog";
+import { DEFAULT_STUDENT, studentName, type StudentSettings } from "./state/student";
 
 async function fetchToken(): Promise<RealtimeCredentials> {
   const res = await fetch("/api/token");
@@ -37,6 +39,8 @@ export default function App() {
   const [transcript, setTranscript] = useState<TranscriptState>(emptyTranscript);
   const [knowledge, setKnowledge] = useState<KnowledgeState>({});
   const [topic, setTopic] = useState("");
+  const [student, setStudent] = useState<StudentSettings>({ ...DEFAULT_STUDENT });
+  const name = studentName(student);
   const [lesson, setLesson] = useState<LessonDefinition | null>(null);
   const [preparing, setPreparing] = useState(false);
   const startupVersion = useRef(0);
@@ -45,8 +49,12 @@ export default function App() {
   const [micLevel, setMicLevel] = useState(0);
   const [micPending, setMicPending] = useState(false);
   const [avatarStatus, setAvatarStatus] = useState<{ configured: boolean; missing: string[]; pythonInstalled: boolean } | null>(null);
-  const [presets, setPresets] = useState<{ id: string; name: string }[]>([]);
-  const [avatarId, setAvatarId] = useState("builtin_claire_v1");
+  const [presets, setPresets] = useState<AvatarOption[]>([]);
+  const catalogRef = useRef<AvatarCatalog | null>(null);
+  const studentRef = useRef(student);
+  studentRef.current = student;
+  const [avatarId, setAvatarId] = useState("");
+  const [avatarNotice, setAvatarNotice] = useState<string | null>(null);
   const [videoTrack, setVideoTrack] = useState<RemoteVideoTrack | null>(null);
   const [avatarError, setAvatarError] = useState<string | null>(null);
   const [avatarReload, setAvatarReload] = useState(0);
@@ -54,6 +62,13 @@ export default function App() {
   const micBusy = useRef(false);
   const connected = connection === "open";
   const busy = preparing || connected || connection === "connecting" || connection === "closing";
+  const selectedFace = presets.find(face => face.id === avatarId);
+  const studentAppearance = catalogRef.current ? studentAvatarSelection(catalogRef.current, student) : null;
+  const changeStudent = (next: StudentSettings) => {
+    if (busy) return;
+    if (catalogRef.current && next.id !== student.id) setAvatarId(avatarForStudent(catalogRef.current, next));
+    setStudent(next); setLesson(null); setKnowledge({}); setTranscript(emptyTranscript); setLog([]);
+  };
 
   useEffect(() => {
     let active = true;
@@ -71,11 +86,13 @@ export default function App() {
       .then(status => { if (active) setAvatarStatus(status); })
       .catch(e => { if (active) setAvatarError(e instanceof Error ? e.message : "Could not load avatar settings."); });
     void fetch("/api/avatar/presets").then(async r => { const data = await r.json(); if (!r.ok) throw new Error(data.error); return data; })
-      .then(catalog => {
+      .then((catalog: AvatarCatalog) => {
         if (!active) return;
+        catalogRef.current = catalog;
         setPresets(catalog.presets);
-        setAvatarId(current => catalog.presets.some((p: { id: string }) => p.id === current) ? current : catalog.presets[0]?.id ?? "");
-      }).catch(e => { if (active) setAvatarError(e instanceof Error ? e.message : "Could not load Boson presets."); });
+        setAvatarId(avatarForStudent(catalog, studentRef.current));
+        setAvatarNotice(catalog.warning);
+      }).catch(e => { if (active) setAvatarError(e instanceof Error ? e.message : "Could not load Boson avatars."); });
     return () => { active = false; };
   }, [mode, avatarReload]);
 
@@ -87,7 +104,7 @@ export default function App() {
     try {
       if (client.current) await client.current.close();
       if (version !== startupVersion.current) return;
-      const prepared = await prepareLesson(topic, mode === "mock", abort.signal);
+      const prepared = await prepareLesson(topic, mode === "mock", abort.signal, student);
       if (version !== startupVersion.current) return;
       setLesson(prepared); setKnowledge(initialTopicKnowledge(prepared)); setTranscript(emptyTranscript); setLog([]);
       const callbacks: RealtimeCallbacks = {
@@ -125,18 +142,22 @@ export default function App() {
 
   return <main className="app">
     <header className="topbar"><a className="brand" href="/"><span className="brand-mark">hı</span> HUMAN INTELLIGENCE</a><span className="project-tag">BOSON AI HACKATHON / 2026</span></header>
-    <section className="intro"><div><p className="eyebrow">LEARN BY EXPLAINING</p><h1>A little teaching.<br /><em>A deeper understanding.</em></h1><p className="lede">Meet Alex, your AI student. Make a tricky idea click by explaining it in your own words.</p></div><div className="lesson-tag"><span>YOUR CLASSROOM</span><strong>{lesson?.topic || topic.trim() || "Your next lesson"}</strong><span>Any topic. Your explanation.</span></div></section>
-    <LessonSetup topic={topic} onTopic={setTopic} disabled={busy} preparing={preparing} onStart={() => void start()} />
+    <section className="intro"><div><p className="eyebrow">LEARN BY EXPLAINING</p><h1>A little teaching.<br /><em>A deeper understanding.</em></h1><p className="lede">Meet {name}, your AI student. Make a tricky idea click by explaining it in your own words.</p></div><div className="lesson-tag"><span>YOUR CLASSROOM</span><strong>{lesson?.topic || topic.trim() || "Your next lesson"}</strong><span>Any topic. Your explanation.</span></div></section>
+    <LessonSetup topic={topic} onTopic={setTopic} student={student} onStudent={changeStudent} disabled={busy} preparing={preparing} onStart={() => void start()} />
     <div className="workspace">
-      <section className="conversation-card" aria-label="Conversation with Alex">
-        <div className="card-head"><div><span className={`dot ${connected ? "dot-open" : ""}`} /><strong>Alex</strong><span className="subtle">Your curious student</span></div><span className="pill">{mode === "avatar" ? "HIGGS AVATAR + REALTIME" : mode === "mock" ? "LOCAL MOCK · TEXT ONLY" : "HIGGS REALTIME"}</span></div>
+      <section className="conversation-card" aria-label={`Conversation with ${name}`}>
+        <div className="card-head"><div><span className={`dot ${connected ? "dot-open" : ""}`} /><strong>{name}</strong><span className="subtle">Your curious student</span></div><span className="pill">{mode === "avatar" ? "HIGGS AVATAR + REALTIME" : mode === "mock" ? "LOCAL MOCK · TEXT ONLY" : "HIGGS REALTIME"}</span></div>
         <div className="controls">
           <div className="session-controls"><select aria-label="Conversation mode" value={mode} onChange={e => { setMode(e.target.value as Mode); setError(null); setTranscript(emptyTranscript); setKnowledge({}); setLesson(null); }} disabled={busy}><option value="avatar">Boson talking avatar</option><option value="voice">Boson voice + photo</option><option value="mock">Local mock (text only)</option></select>
           {!busy ? <button className="primary" disabled={!topic.trim() || (mode === "avatar" && (!avatarStatus?.configured || !presets.length))} onClick={() => void start()}>Start lesson <span>↗</span></button> : <button onClick={end}>{preparing ? "Cancel lesson setup" : connection === "connecting" ? "Cancel connection" : "End lesson"}</button>}</div>
           {mode !== "mock" && <MicButton active={micActive} level={micLevel} disabled={!connected || micPending} onToggle={() => void toggleMic()} />}
           {configured === false && mode === "voice" && <p className="notice">Add BOSON_API_KEY to .env and restart the server for live voice, or select Local mock to explore.</p>}
           {mode === "avatar" && <div className="avatar-setup">
-            <label htmlFor="avatar-preset">Student avatar</label><select id="avatar-preset" value={avatarId} onChange={e => setAvatarId(e.target.value)} disabled={busy || !presets.length}>{presets.length ? presets.map(p => <option value={p.id} key={p.id}>{p.name}</option>) : <option>Loading Boson presets…</option>}</select>
+            {selectedFace && <p className="avatar-face-label">Live face: <strong>{selectedFace.name}</strong></p>}
+            {studentAppearance?.notice && studentAppearance.avatarId === avatarId && <p className="notice" role="status">{studentAppearance.notice}</p>}
+            {studentAppearance && studentAppearance.avatarId !== avatarId && selectedFace && <p className="notice">{name} is using the {selectedFace.name} face you selected.</p>}
+            <details className="avatar-options"><summary>Change avatar appearance</summary><label htmlFor="avatar-preset">Available face</label><select id="avatar-preset" value={avatarId} onChange={e => setAvatarId(e.target.value)} disabled={busy || !presets.length}>{presets.length ? presets.map(p => <option value={p.id} key={p.id}>{p.name}{p.isPublic ? " · Preset" : " · Account avatar"}</option>) : <option>Loading Boson avatars…</option>}</select></details>
+            {avatarNotice && <p className="notice" role="status">{avatarNotice}</p>}
             {avatarStatus && !avatarStatus.configured && <div className="notice"><strong>Connect LiveKit Cloud to start the talking avatar.</strong><p>Create a project at <a href="https://cloud.livekit.io" target="_blank" rel="noreferrer">LiveKit Cloud</a>, then add these missing settings to your local .env and restart npm run dev:</p><code>{avatarStatus.missing.length ? avatarStatus.missing.join(", ") : "BOSON_API_KEY"}</code><p>You can choose “Boson voice + photo” while setting this up.</p></div>}
             {avatarStatus && !avatarStatus.pythonInstalled && <p className="notice">Install the avatar agent once with <code>npm run avatar:setup</code> (Python 3.10+).</p>}
             {avatarError && <div className="error" role="alert"><p>{avatarError}</p><button type="button" disabled={busy} onClick={() => setAvatarReload(value => value + 1)}>Retry avatar setup</button></div>}
@@ -145,17 +166,17 @@ export default function App() {
         </div>
         <div className={`student-stage ${activity === "speaking" ? "speaking" : ""}`}>
           <div className="stage-label">{mode === "avatar" ? "LIVE AVATAR CLASSROOM" : mode === "mock" ? "UI DEVELOPMENT MODE" : "VOICE CLASSROOM"}</div>
-          {mode === "avatar" ? <LiveAvatarVideo track={videoTrack} connecting={connection === "connecting"} /> : <AvatarPhoto />}
-          <h2>Let’s figure it out together.</h2><p>{connected ? (mode === "mock" ? "Type an explanation below to try the learning flow." : activity === "speaking" ? "Alex is speaking… You can interrupt." : activity === "thinking" ? "Alex is thinking…" : micActive ? "Alex is listening. Go ahead." : "Turn on your microphone and say hello.") : preparing ? "Getting ready to learn your topic…" : lesson?.openingQuestion ?? "Choose a topic and help Alex make sense of it."}</p>
+          {mode === "avatar" ? <LiveAvatarVideo track={videoTrack} connecting={connection === "connecting"} name={name} /> : <AvatarPhoto name={name} />}
+          <h2>Let’s figure it out together.</h2><p>{connected ? (mode === "mock" ? "Type an explanation below to try the learning flow." : activity === "speaking" ? `${name} is speaking… You can interrupt.` : activity === "thinking" ? `${name} is thinking…` : micActive ? `${name} is listening. Go ahead.` : "Turn on your microphone and say hello.") : preparing ? "Getting ready to learn your topic…" : lesson?.openingQuestion ?? `Choose a topic and help ${name} make sense of it.`}</p>
           <div className="avatar-note">{mode === "avatar" ? "Boson renders the face and speech together in LiveKit." : "Photo mode · Live animation is available in Boson talking avatar mode."}</div>
         </div>
-        <div className="transcript-wrap" aria-label="Conversation transcript"><TranscriptPanel state={transcript} topic={lesson?.topic} /></div>
-        <form className="composer" onSubmit={e => { e.preventDefault(); send(); }}><input aria-label="Your explanation" value={text} onChange={e => setText(e.target.value)} placeholder={connected ? "Or type your explanation here…" : "Start a lesson to talk with Alex…"} disabled={!connected} /><button className="send" disabled={!connected || !text.trim()} aria-label="Send explanation">↑</button></form>
-        <div className="conversation-actions"><button className="link" disabled={!connected || activity === "thinking" || activity === "speaking"} onClick={() => send("Can you teach back what I explained? Try a small example and tell me what still confuses you.")}>Ask Alex to teach back ↗</button></div>
+        <div className="transcript-wrap" aria-label="Conversation transcript"><TranscriptPanel state={transcript} topic={lesson?.topic} name={name} /></div>
+        <form className="composer" onSubmit={e => { e.preventDefault(); send(); }}><input aria-label="Your explanation" value={text} onChange={e => setText(e.target.value)} placeholder={connected ? "Or type your explanation here…" : `Start a lesson to talk with ${name}…`} disabled={!connected} /><button className="send" disabled={!connected || !text.trim()} aria-label="Send explanation">↑</button></form>
+        <div className="conversation-actions"><button className="link" disabled={!connected || activity === "thinking" || activity === "speaking"} onClick={() => send("Can you teach back what I explained? Try a small example and tell me what still confuses you.")}>Ask {name} to teach back ↗</button></div>
       </section>
       <aside className="sidebar">
-        <LearningMap lesson={lesson} state={knowledge} preparing={preparing} />
-        <section className="hint-card"><span className="spark">✳</span><p className="eyebrow">{startingHunch ? "ALEX’S STARTING HUNCH" : "A PLACE TO START"}</p><h3>{startingHunch ? `“${startingHunch}”` : lesson?.openingQuestion ?? "What’s the big idea?"}</h3><p>{startingHunch ? "Help Alex reason through this idea. Explain why, then try an example together." : "Start with the main idea in plain language. Build on it one explanation at a time."}</p><div className="hint-divider" /><p className="fine-print">Ask Alex to explain it back in a new example.</p></section>
+        <LearningMap lesson={lesson} state={knowledge} preparing={preparing} name={name} />
+        <section className="hint-card"><span className="spark">✳</span><p className="eyebrow">{startingHunch ? `${name.toUpperCase()}’S STARTING HUNCH` : "A PLACE TO START"}</p><h3>{startingHunch ? `“${startingHunch}”` : lesson?.openingQuestion ?? "What’s the big idea?"}</h3><p>{startingHunch ? `Help ${name} reason through this idea. Explain why, then try an example together.` : "Start with the main idea in plain language. Build on it one explanation at a time."}</p><div className="hint-divider" /><p className="fine-print">Ask {name} to explain it back in a new example.</p></section>
         <a className="avatar-link" href="https://docs.boson.ai/models/higgs-avatar/realtime-sessions" target="_blank" rel="noreferrer">Boson live avatar setup guide ↗</a>
       </aside>
     </div>

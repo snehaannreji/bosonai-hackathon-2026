@@ -63,9 +63,19 @@ Ending a lesson, closing the tab, losing the event stream, leaving the room, or 
 
 ## Uploaded photos
 
+**Verified generated-video test:** the supplied portrait successfully produced a talking-photo MP4 using `POST /v1/videos`, `ref_image` and `input_tts`. This separate CLI test does not register a live avatar. See [results, repeatable commands, and the exact missing Boson protocol](CUSTOM-AVATAR-INVESTIGATION.md). The classroom continues using presets for live conversations.
+
 **Boson voice + photo** keeps your chosen photo in browser IndexedDB. That is a still portrait, separate from the preset used in talking-avatar mode. The published live API accepts a registered `avatar_id`; the full OpenAPI schema does not document a photo-registration endpoint. Boson reportedly supports custom photos for the team, but its registration instructions are still needed. Do not guess an endpoint or pass an image as an avatar ID.
 
 ## Configuration and diagnostics
+
+### Account-owned custom avatars
+
+The classroom accepts **both presets and account-owned IDs** from `GET /v1/avatars`. Configure `BOSON_AVATAR_ID` in the root `.env` with the exact ID Boson supplies, restart `npm run dev`, and refresh the webpage. That ID becomes the default when it is present in your key's catalog; the menu labels owned entries **Account avatar**. The server validates the selection, passes it as `TEACHBACK_AVATAR_ID` to the existing worker, and the worker sends it unchanged in the documented `POST /v1/avatar/sessions` request. LiveKit, Realtime 1.5, interruption handling and learning assessment use the same path as presets.
+
+If the configured ID is absent from the catalog, the classroom shows a notice and selects Claire (or another listed preset). All listed presets remain manually selectable. With no explicit ID configured, an owned avatar is preferred when available; otherwise a preset is used. A provider failure after session creation starts is reported normally rather than automatically creating another billable session. Catalog results are cached for up to five minutes; restart the server after Boson adds an ID to pick it up immediately. The legacy `/api/avatar/presets` endpoint name is retained, but its `presets` array now contains the full catalog plus `defaultAvatarId` and `warning` response fields.
+
+The latest authenticated catalog check still exposes only Claire, Emma and James; no account-owned ID is available to test live yet. No registration endpoint was invented. The standalone generated-video test does not register an avatar.
 
 Optional server-only overrides:
 
@@ -79,7 +89,7 @@ BOSON_REALTIME_URL=wss://api.boson.ai/v1/realtime
 
 The main classroom loads its session config directly from TypeScript at startup. It does not require `npm run avatar:config`; that export is only for standalone diagnostics.
 
-`GET /api/avatar/status` reports missing LiveKit settings and whether the Python environment exists. `GET /api/avatar/presets` reads your Boson catalog. Neither starts a billable avatar session. `POST /api/avatar/lessons` refuses incomplete settings before creating a room or avatar; its short-lived room token is intended for the browser. The server remains bound to localhost. Add authentication and issuance limits before public deployment.
+`GET /api/avatar/status` reports missing LiveKit settings and whether the Python environment exists. `GET /api/avatar/presets` reads your full Boson catalog and resolves the configured default. Neither starts a billable avatar session. `POST /api/avatar/lessons` accepts a listed `avatarId`, or uses the resolved default if omitted; it refuses incomplete settings before creating a room or avatar. Its short-lived room token is intended for the browser. The server remains bound to localhost. Add authentication and issuance limits before public deployment.
 
 The client/bridge unit tests cover readiness, track isolation, microphone controls, tool evidence, tool deduplication, cancellation, and cleanup. The Python dependency import check and TypeScript/build checks pass. A credentialed media smoke test now passes; browser device playback and perceptual sync remain a manual check.
 

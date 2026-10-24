@@ -1,3 +1,5 @@
+import { normalizeStudent, type StudentSettings } from "./student";
+
 export interface LessonConcept {
   id: string;
   label: string;
@@ -11,6 +13,7 @@ export interface LessonDefinition {
   openingQuestion: string;
   concepts: LessonConcept[];
   mock: boolean;
+  student?: StudentSettings;
 }
 export interface HumanTurn { id: string; text: string }
 export interface EvidenceAssessment { matchedCriteria: string[]; misconception: boolean; reason: string }
@@ -24,8 +27,8 @@ export function normalizeTopic(value: unknown): string {
   return topic;
 }
 
-export function mockLesson(topic: string): LessonDefinition {
-  return { id: `mock-${Date.now()}`, topic: normalizeTopic(topic), mock: true,
+export function mockLesson(topic: string, student?: StudentSettings): LessonDefinition {
+  return { id: `mock-${Date.now()}`, topic: normalizeTopic(topic), mock: true, student: normalizeStudent(student),
     openingQuestion: `What is the main idea behind ${topic}?`,
     concepts: [
       { id: "concept_1", label: "The main idea", goal: `Explain what ${topic} means.`, criteria: ["Define the central idea in your own words.", "Explain why it matters."], initialBelief: null },

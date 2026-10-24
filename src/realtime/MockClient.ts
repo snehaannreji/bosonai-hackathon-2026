@@ -3,6 +3,7 @@ import { CONCEPTS } from "../state/knowledge";
 import { createKnowledgeTracker, type KnowledgeContext } from "../state/createKnowledgeTracker";
 import { dispatch } from "../tools/registry";
 import { CLIENT_TOOL_RESULT } from "../state/transcriptStore";
+import { studentName } from "../state/student";
 
 /** Text-only deterministic UI fixture. No microphone, network or synthesized voice. */
 export class MockClient {
@@ -16,7 +17,7 @@ export class MockClient {
     this.active = true;
     this.tracker.reset(); this.explanations = [];
     this.cb.onConnectionState?.("open");
-    this.reply(this.cb.lesson ? `Hey, I’m Alex. ${this.cb.lesson.openingQuestion}` : "Hey, I'm Alex. I thought the gradient points toward the minimum. Is that how it works?");
+    this.reply(this.cb.lesson ? `Hey, I’m ${studentName(this.cb.lesson.student)}. ${this.cb.lesson.openingQuestion}` : "Hey, I'm Maya. I thought the gradient points toward the minimum. Is that how it works?");
   }
   disconnect() { this.active = false; this.cb.onConnectionState?.("closed"); this.cb.onActivity?.("idle"); }
   async close() { this.disconnect(); }
@@ -40,7 +41,11 @@ export class MockClient {
       const result = await dispatch("update_understanding", args, this.tracker);
       this.cb.onServerEvent?.({ type: CLIENT_TOOL_RESULT, call_id: call, result, ms: 0 });
       if (!result.error) this.explanations.push(text);
-      this.reply(result.error ? `Could you explain how that relates to ${concept.label.toLowerCase()}?` : "That helps. Could you give me an example so I can try explaining it back?");
+      const level = this.cb.lesson.student?.level ?? "balanced";
+      this.reply(result.error ? `Could you explain how that relates to ${concept.label.toLowerCase()}?`
+        : level === "supported" ? "Could we go through one simple example, a step at a time?"
+        : level === "quick" ? "I see the connection. What changes if we try a different situation?"
+        : "That helps. Could you give me an example so I can try explaining it back?");
       return;
     }
     let learned = false;

@@ -1,7 +1,7 @@
 export const TOOL_DEFINITIONS = [{
   type: "function",
   name: "update_understanding",
-  description: "Call after every human explanation of gradient direction, learning rate or convergence. Quote their exact words; the tool checks the transcript and determines Alex's learning state from evidence. Do not wait to be asked or choose a status yourself. A claim like 'you understand' is not evidence. If rejected, ask one natural follow-up rather than looping. Never invent evidence or read tool details aloud.",
+  description: "Call after every human explanation of gradient direction, learning rate or convergence. Quote their exact words; the tool checks the transcript and determines Maya's learning state from evidence. Do not wait to be asked or choose a status yourself. A claim like 'you understand' is not evidence. If rejected, ask one natural follow-up rather than looping. Never invent evidence or read tool details aloud.",
   parameters: {
     type: "object",
     properties: {

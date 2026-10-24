@@ -77,6 +77,17 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         self.post.assert_called_once(); self.delete.assert_not_called(); self.room.connect.assert_not_called()
         self.assertIn("capacity_exhausted", self.logs.getvalue())
         self.assertNotIn("test-only-key", self.logs.getvalue())
+    async def test_account_avatar_id_uses_the_same_official_livekit_session_request(self):
+        self.room.connect.side_effect = RuntimeError("stop after provider request")
+        with patch.object(agent, "AVATAR_ID", "owned_alex_test"):
+            with self.assertRaises(RuntimeError): await self.run_main()
+        payload = self.post.call_args.kwargs["json"]
+        self.assertEqual(payload["avatar_id"], "owned_alex_test")
+        self.assertEqual(payload["transport"]["type"], "livekit")
+        self.assertEqual(payload["transport"]["publisher_identity"], "agent")
+        self.assertNotIn("ref_image", payload)
+        self.assertTrue(self.post.call_args.args[0].endswith("/v1/avatar/sessions"))
+        self.delete.assert_called_once()
     async def test_sdk_interruption_clears_avatar_and_truncates_to_heard_audio(self):
         output = FakeOutput()
         ws = FakeSocket([

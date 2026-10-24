@@ -1,6 +1,6 @@
 # Human Intelligence · TeachBack
 
-Teach an AI student instead of asking an AI tutor. Enter **any topic**—photosynthesis, French past tense, jazz improvisation, a recipe, or something else—and teach Alex in your own words. Each lesson gets its own three starting concepts, questions, and learning map. Alex stays a curious learner rather than becoming an expert tutor.
+Teach an AI student instead of asking an AI tutor. Enter **any topic**—photosynthesis, French past tense, jazz improvisation, a recipe, or something else—and teach **Maya or Kai** in your own words. Each lesson gets its own three starting concepts, questions, and learning map. Both stay curious learners rather than becoming expert tutors.
 
 Built from [Boson’s official Higgs Realtime tutorial](https://github.com/boson-ai/Higgs-Realtime-Tutorial). The starter’s microphone capture, PCM streaming, server VAD, barge-in/playback truncation, transcript reducer and batched tool loop are reused. See [upstream attribution](docs/UPSTREAM.md) and LICENSE. No model training takes place.
 
@@ -17,13 +17,13 @@ npm run dev
 
 Open **http://localhost:5173**. The command starts the Node token server on port 3000 and React/Vite on port 5173.
 
-1. Enter the topic you want to teach, choose Boson talking avatar or Boson voice + photo, and click **Start lesson**. Boson prepares a small topic-specific learning map.
-2. Click **Start microphone**, allow browser microphone access, and begin explaining the topic. You can start by asking Alex what they think it means.
-3. Explain the idea. Pause to let Boson’s server turn detector respond. Speak over Alex to interrupt.
-4. Read the transcript and learning map. Click **Ask Alex to teach back** after an explanation.
+1. Enter a topic, choose **Maya** or **Kai** and a **Student intelligence** level, choose Boson talking avatar or Boson voice + photo, and click **Start lesson**. Boson prepares a small topic-specific learning map.
+2. Click **Start microphone**, allow browser microphone access, and begin explaining the topic. You can start by asking Maya what they think it means.
+3. Explain the idea. Pause to let Boson’s server turn detector respond. Speak over Maya to interrupt.
+4. Read the transcript and learning map. Click **Ask Maya to teach back** after an explanation.
 5. **Stop microphone** pauses listening; **End lesson** stops the mic, clears queued speech and disconnects. Starting another lesson resets the conversation and knowledge.
 
-Use headphones to minimize echo. Microphone access needs localhost or HTTPS. Chrome is the recommended first demo browser. Text input is also available in live mode; Alex still answers with Boson speech.
+Use headphones to minimize echo. Microphone access needs localhost or HTTPS. Chrome is the recommended first demo browser. Text input is also available in live mode; Maya still answers with Boson speech.
 
 **No key?** Run the same commands, choose **Local mock (text only)**, then **Start lesson**. Enter a topic and type an explanation. This deterministic fixture uses transcript grounding and simulated assessments, but has **no microphone, no speech, no live AI and no avatar**. It never silently replaces a failed Boson connection.
 
@@ -36,9 +36,17 @@ npm run dev
 
 A regular Node installation is preferable for ongoing team work.
 
+## Maya, Kai and student intelligence
+
+Choose your student before starting: **Maya** uses Boson's Claire preset, and **Kai** uses James. These are TeachBack character names; the real provider avatar IDs remain unchanged. A configured account-owned avatar is preserved, and **Change avatar appearance** keeps all available preset/custom faces accessible. If a character's preferred face is unavailable, the catalog default is used.
+
+**Student intelligence** controls simulated learning behavior: **Needs more guidance** asks for plain language, worked examples and practice; **Balanced** asks normal follow-ups; **Quick learner** connects explanations faster and asks deeper application questions. The setting applies equally to either student, in voice and live-avatar mode. It does not change model weights or claim a measured IQ. The same evidence checks govern the understanding map at every level.
+
+Student and level are saved in each lesson definition and locked during the lesson. End the lesson to change them; changing either resets the previous transcript/map before a fresh lesson. The local text mock displays the selected name and different follow-up styles, but remains a deterministic UI fixture.
+
 ## Realtime 1.5 early access (team priority)
 
-The team-provided **Boson-Opening-2026.pdf**, slides 7 and 17, gives the exact model ID: **`higgs-realtime-1.5-preview`**. A credentialed smoke test accepted that ID, the server reported it in `session.created`, and Alex returned real speech. The app now defaults to this exact preview ID; it does not silently fall back to `higgs-realtime`.
+The team-provided **Boson-Opening-2026.pdf**, slides 7 and 17, gives the exact model ID: **`higgs-realtime-1.5-preview`**. A credentialed smoke test accepted that ID, the server reported it in `session.created`, and Maya returned real speech. The app now defaults to this exact preview ID; it does not silently fall back to `higgs-realtime`.
 
 ```dotenv
 BOSON_API_KEY=your-early-access-key
@@ -85,7 +93,7 @@ Higgs update_understanding tool → quoted human evidence → independent Boson 
 
 A lesson begins with the topic entered in the classroom. The Node server asks Higgs Realtime 1.5 for three relevant beginner concepts, two explanation criteria per concept, an opening question, and at most one plausible starting misconception. Unfamiliar/private topics should use clarification-oriented concepts instead of fabricated facts. All plans are validated before they reach the student.
 
-Alex's system prompt and `update_understanding` tool schema are generated from that lesson. The learning map displays its actual concept labels. Each new lesson resets the transcript, evidence and state, even when two different topics happen to use the same internal concept IDs. A topic cannot be edited while its lesson is active: end the lesson, enter a new topic, and start again.
+Maya's system prompt and `update_understanding` tool schema are generated from that lesson. The learning map displays its actual concept labels. Each new lesson resets the transcript, evidence and state, even when two different topics happen to use the same internal concept IDs. A topic cannot be edited while its lesson is active: end the lesson, enter a new topic, and start again.
 
 The tool accepts only a lesson concept ID and a verbatim human quote:
 
@@ -96,7 +104,7 @@ The tool accepts only a lesson concept ID and a verbatim human quote:
 }
 ```
 
-The tracker first matches the quote against an actual observed human turn and rejects bare reassurance. An independent Boson text/tool session then assesses the recent human explanations against that concept's two criteria, using the entire source text so a cherry-picked quote cannot hide a contradiction. It returns matched criterion IDs and whether there is a concrete misconception. The tracker derives `unknown`, `misunderstood`, `partial`, or `understood`; Alex cannot self-award a status. One matched criterion gives partial, two give understood, and a concrete misconception gives misunderstood. Unsupported explanations leave state unchanged.
+The tracker first matches the quote against an actual observed human turn and rejects bare reassurance. An independent Boson text/tool session then assesses the recent human explanations against that concept's two criteria, using the entire source text so a cherry-picked quote cannot hide a contradiction. It returns matched criterion IDs and whether there is a concrete misconception. The tracker derives `unknown`, `misunderstood`, `partial`, or `understood`; Maya cannot self-award a status. One matched criterion gives partial, two give understood, and a concrete misconception gives misunderstood. Unsupported explanations leave state unchanged.
 
 The same logic powers avatar and voice modes. Side-channel planning/assessment calls use the supported Boson Realtime protocol with text output and function calling, not another AI provider. They are serialized to avoid exhausting realtime concurrency. Assessments are cached within a lesson, errors preserve the previous state, and a result is discarded if a newer human explanation arrives while it is being checked. A delayed tool continuation does not start speech over a newer human turn.
 
@@ -104,17 +112,19 @@ The same logic powers avatar and voice modes. Side-channel planning/assessment c
 
 **Local mock** needs no API call for topic preparation. It uses generic main-idea/mechanism/example cards and a clearly labeled simulated assessment. It is for UI work, not semantic evaluation. The original gradient-descent rubric remains only as a backward-compatible diagnostic fixture; the classroom always supplies a fresh topic-specific lesson.
 
-## Upload a photo for Alex
+## Upload a photo for Maya
 
-In the classroom, click **Upload a photo** or drop a photo on the avatar area. Choose a JPG, PNG or WebP up to 10 MB. The portrait appears while you talk to Alex. **Change photo** replaces it; **Remove** clears it. The photo persists across refreshes and new lessons in the same browser/profile/origin.
+A separate, verified **generated talking-photo test** is available as `npm run probe:photo -- --image '/full/path/student.jpg' --out captures/student.mp4`. It uses Boson's documented video endpoint, polls, and downloads an MP4. It does not turn the classroom portrait into a live custom avatar. See [the test result, setup, and missing live protocol](docs/CUSTOM-AVATAR-INVESTIGATION.md).
+
+In the classroom, click **Upload a photo** or drop a photo on the avatar area. Choose a JPG, PNG or WebP up to 10 MB. The portrait appears while you talk to Maya. **Change photo** replaces it; **Remove** clears it. The photo persists across refreshes and new lessons in the same browser/profile/origin.
 
 Photos are decoded to reject corrupt files and saved as blobs in IndexedDB. They are not sent to Boson or stored on the server. Clearing browser site data also removes them. If browser storage is unavailable, a valid image can still be shown for the current visit, with a visible notice.
 
-The badge **Photo avatar · Not animated** means this is a still portrait. It does not claim to lip-sync. Boson's published live-session schema accepts an existing `avatar_id`; neither its session schema nor its published API routes include photo registration. If Boson enables custom-photo avatars for the team, obtain the supported registration instructions and resulting ID, then use that ID in `BOSON_AVATAR_ID`. LiveKit Cloud credentials are still needed for the separate live-video prototype. [Official session request schema](https://docs.boson.ai/api-reference/avatar-realtime/create-a-session)
+The badge **Photo avatar · Not animated** means this is a still portrait. It does not claim to lip-sync. Boson's published live-session schema accepts a preset or an account-owned `avatar_id`; its published API routes do not include photo registration. Once Boson registers your photo, set `BOSON_AVATAR_ID` to the returned ID in `.env`, restart `npm run dev`, and refresh the classroom. It selects that ID if it appears in your key's catalog. Owned avatars appear as **Account avatar** alongside presets. An unavailable configured ID produces a notice and selects an available preset. Leaving the variable blank prefers an owned avatar, then a preset. LiveKit Cloud credentials are required for this live path. [Official session request schema](https://docs.boson.ai/api-reference/avatar-realtime/create-a-session)
 
 ## Boson talking avatar (integrated)
 
-The classroom now defaults to **Boson talking avatar**. Your key's avatar catalog is loaded from Boson; the checked catalog contains Claire, Emma, and James. Choose a preset, start a lesson, then enable the microphone. Boson publishes the actual moving video and synchronized voice in LiveKit; no prerecorded clip or simulated animation is used.
+The classroom now defaults to **Boson talking avatar**. Your key's full available-avatar catalog is loaded from Boson; the checked catalog currently contains only Claire, Emma, and James. Choose an avatar, start a lesson, then enable the microphone. Boson publishes the actual moving video and synchronized voice in LiveKit; no prerecorded clip or simulated animation is used.
 
 **One-time setup:** create a project at [LiveKit Cloud](https://cloud.livekit.io). Copy its project URL and a key/secret from **Settings → Keys** into `.env`:
 
@@ -135,7 +145,7 @@ The setup command selects an installed Python 3.10+ and installs Boson's officia
 
 Open http://localhost:5173, enter your topic, choose **Boson talking avatar**, choose a **Student avatar**, click **Start lesson**, wait for the real video track, then **Start microphone**. There is no separate Python command or token copying for the main classroom: the Node server starts and stops the official-example-derived bridge automatically. Voice-only use remains available as **Boson voice + photo** while LiveKit is being configured.
 
-The server creates one isolated room per lesson, mints a short-lived user token, starts the Python bridge, and streams transcript and knowledge events back to React. The same evidence validator handles Alex's tool calls. The avatar's own audio track is the only speaker output. LiveKit handles microphone capture; Boson's server handles turn detection; `DataStreamAudioOutput` drives video/audio playout and clears the buffer when interrupted. Playback acknowledgements supply the heard duration for history truncation. End lesson, tab close, stream disconnection and a 10-minute cap all trigger cleanup.
+The server creates one isolated room per lesson, mints a short-lived user token, starts the Python bridge, and streams transcript and knowledge events back to React. The same evidence validator handles Maya's tool calls. The avatar's own audio track is the only speaker output. LiveKit handles microphone capture; Boson's server handles turn detection; `DataStreamAudioOutput` drives video/audio playout and clears the buffer when interrupted. Playback acknowledgements supply the heard duration for history truncation. End lesson, tab close, stream disconnection and a 10-minute cap all trigger cleanup.
 
 LiveKit credentials are now configured locally. A headless live test received actual moving Claire video and speech, exercised the learning tool, and verified the room was empty after cleanup. Human-device playback and the perception of lip synchronization still deserve a short browser check. Client/learning integration tests, TypeScript and build checks also pass. Detailed setup and troubleshooting: [AVATAR.md](docs/AVATAR.md).
 
@@ -155,7 +165,7 @@ Tests cover arbitrary-topic prompts/tool schemas, independent-assessment gates, 
 Credentialed diagnostics, using the starter’s headless probe (Node 22+):
 
 ```bash
-npm run probe -- --text "Hi Alex, what does the gradient tell us?"
+npm run probe -- --text "Hi Maya, what does the gradient tell us?"
 npm run probe -- --say "The gradient points uphill. We take the negative gradient to decrease loss."
 ```
 
@@ -174,6 +184,6 @@ Open http://localhost:3000. `npm run preview` is a static preview only and does 
 
 ## Next three small tasks
 
-1. **Developer 1:** complete a microphone lesson on a topic of your choice, interrupt Alex during a pending learning check, and record whether transcripts, speech and learning updates line up.
+1. **Developer 1:** complete a microphone lesson on a topic of your choice, interrupt Maya during a pending learning check, and record whether transcripts, speech and learning updates line up.
 2. **Developer 3:** test a second subject through the avatar in the browser and refine lesson setup or topic-specific feedback based on that run.
 3. **Developer 2:** add held-out teaching examples for several subjects to assess the topic planner and evidence checker beyond the smoke tests.

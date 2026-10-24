@@ -1,5 +1,6 @@
 import type { KnowledgeState, ToolResult } from "./knowledge";
 import { CRITERIA_IDS, type EvidenceAssessor, type HumanTurn, type LessonDefinition } from "./lesson";
+import { studentName } from "./student";
 
 const normalize = (value: string) => value.normalize("NFKC").toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 export const isBareConfirmation = (text: string) => /^(?:yes|right|correct|exactly|good job|you understand(?: now)?|you got it|trust me|that is correct|you are correct)(?: (?:yes|right|correct|exactly|now|trust me|that is correct|you understand|you got it))*$/.test(normalize(text));
@@ -7,12 +8,12 @@ export const isBareConfirmation = (text: string) => /^(?:yes|right|correct|exact
 export function initialTopicKnowledge(lesson: LessonDefinition | null): KnowledgeState {
   return Object.fromEntries((lesson?.concepts ?? []).map(concept => [concept.id, {
     status: concept.initialBelief ? "misunderstood" : "unknown",
-    evidence: concept.initialBelief ? `Alex’s starting hunch: ${concept.initialBelief}` : "Waiting for your explanation.",
+    evidence: concept.initialBelief ? `${studentName(lesson?.student)}’s starting hunch: ${concept.initialBelief}` : "Waiting for your explanation.",
   }]));
 }
 
 /** Concept-independent evidence gates plus a separate, topic-aware assessment.
- * Alex cannot self-award mastery or invent quotes from unobserved human turns. */
+ * The student cannot self-award mastery or invent quotes from unobserved human turns. */
 export class TopicKnowledgeTracker {
   private state: KnowledgeState;
   private turns = new Map<string, string>();
@@ -46,7 +47,7 @@ export class TopicKnowledgeTracker {
     if (!status) return reject("insufficient_evidence", result.reason || "No substantive explanation for this concept yet.");
     this.state = { ...this.state, [concept.id]: { status, evidence: source[1], sourceId: source[0], reason: result.reason, criteriaMet: matched } };
     this.onChange?.(this.snapshot());
-    return { summary: `${concept.label} is now ${status}. ${result.reason} Continue as Alex, with a short question or teach-back; do not announce the dashboard update.`, state: this.snapshot() };
+    return { summary: `${concept.label} is now ${status}. ${result.reason} Continue as ${studentName(this.lesson.student)}, with a short question or teach-back; do not announce the dashboard update.`, state: this.snapshot() };
   }
 }
 

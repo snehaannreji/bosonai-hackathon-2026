@@ -132,7 +132,7 @@ export class RealtimeClient {
 
   /** Start streaming microphone audio. Throws if permission is denied. */
   async startMic(): Promise<void> {
-    if (!this.sessionReady) throw new Error("Wait for Alex to connect before enabling the microphone.");
+    if (!this.sessionReady) throw new Error("Wait for your student to connect before enabling the microphone.");
     try { await this.capture.start(); }
     catch (error) { await this.capture.stop(); throw error; }
     if (!this.sessionReady) { await this.capture.stop(); return; }

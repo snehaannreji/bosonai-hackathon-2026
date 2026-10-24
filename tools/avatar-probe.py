@@ -36,15 +36,17 @@ def png(frame, path):
     path.write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack("!2I5B", width, height, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
 
 
-async def main(topic, explanation):
+async def main(topic, explanation, avatar_id=None):
     def prepare():
         response = requests.post("http://localhost:5173/api/lessons", json={"topic": topic}, timeout=45)
         response.raise_for_status()
         return response.json()["lesson"]
     definition = await asyncio.to_thread(prepare)
     print("Topic:", definition["topic"], "| Concepts:", [c["label"] for c in definition["concepts"]], flush=True)
-    lesson = await asyncio.to_thread(post, "/lessons", {"avatarId": "builtin_claire_v1", "lessonId": definition["id"]})
-    print("Local avatar lesson reserved.", flush=True)
+    selection = {"lessonId": definition["id"]}
+    if avatar_id: selection["avatarId"] = avatar_id
+    lesson = await asyncio.to_thread(post, "/lessons", selection)
+    print("Local avatar lesson reserved; avatar:", lesson.get("avatarId", "server default"), flush=True)
     room = rtc.Room()
     loop = asyncio.get_running_loop()
     ready = asyncio.Event()
@@ -141,9 +143,10 @@ async def main(topic, explanation):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--topic", default="Photosynthesis")
+    parser.add_argument("--avatar-id", help="Optional catalog ID; otherwise uses the server's BOSON_AVATAR_ID/default.")
     parser.add_argument("--explanation", default="Plants need sunlight, water and carbon dioxide for photosynthesis. Chlorophyll in chloroplasts absorbs light, and plants use that energy to make glucose, storing chemical energy and releasing oxygen as a byproduct.")
     args = parser.parse_args()
-    try: asyncio.run(main(args.topic, args.explanation))
+    try: asyncio.run(main(args.topic, args.explanation, args.avatar_id))
     except Exception as error:
         print("FAIL:", type(error).__name__, str(error), flush=True)
         raise SystemExit(1)

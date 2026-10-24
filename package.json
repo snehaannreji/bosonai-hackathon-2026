@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Teach Alex gradient descent with Boson Higgs Realtime",
+  "description": "Teach Maya or Kai any topic with Boson Higgs Realtime",
   "scripts": {
     "dev": "concurrently -n server,client -c blue,green \"npm:dev:server\" \"npm:dev:client\"",
     "dev:client": "vite",
@@ -17,7 +17,8 @@
     "avatar:config": "tsx tools/avatar-config.ts",
     "avatar:setup": "bash tools/setup-avatar.sh",
     "test:avatar": ".venv-avatar/bin/python -m unittest discover -s avatar -p 'test_*.py'",
-    "probe:avatar": ".venv-avatar/bin/python tools/avatar-probe.py"
+    "probe:avatar": ".venv-avatar/bin/python tools/avatar-probe.py",
+    "probe:photo": ".venv-avatar/bin/python tools/photo-video-probe.py"
   },
   "dependencies": {
     "dotenv": "^16.4.7",
