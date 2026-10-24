@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { RealtimeClient, type Activity, type AudioRenderer, type ConnectionState, type LogEntry, type RealtimeCallbacks } from "./realtime/RealtimeClient";
 import { MockClient } from "./realtime/MockClient";
 import { emptyTranscript, transcriptReducer, type TranscriptState } from "./state/transcriptStore";
@@ -17,6 +17,7 @@ import { AvatarPhoto } from "./ui/AvatarPhoto";
 import { LiveAvatarClient } from "./realtime/LiveAvatarClient";
 import { LiveAvatarVideo } from "./ui/LiveAvatarVideo";
 import type { RemoteVideoTrack } from "livekit-client";
+import { emotionDashboardRecords } from "./realtime/emotionDashboard";
 
 async function fetchToken(): Promise<RealtimeCredentials> {
   const res = await fetch("/api/token");
@@ -34,6 +35,7 @@ export default function App() {
   const [connection, setConnection] = useState<ConnectionState>("idle");
   const [activity, setActivity] = useState<Activity>("idle");
   const [log, setLog] = useState<LogEntry[]>([]);
+  const [emotionLog, setEmotionLog] = useState<LogEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [text, setText] = useState("");
   const [transcript, setTranscript] = useState<TranscriptState>(emptyTranscript);
@@ -61,6 +63,7 @@ export default function App() {
   const micBusy = useRef(false);
   const connected = connection === "open";
   const busy = preparing || connected || connection === "connecting" || connection === "closing";
+  const emotionRecords = useMemo(() => emotionDashboardRecords(emotionLog), [emotionLog]);
 
   useEffect(() => {
     let active = true;
@@ -100,11 +103,15 @@ export default function App() {
       if (version !== startupVersion.current) return;
       const prepared = await prepareLesson(topic, mode === "mock", familiarity, studentName, instructorNotes, abort.signal);
       if (version !== startupVersion.current) return;
-      setLesson(prepared.lesson); setInstructorGuide(prepared.instructorGuide); setKnowledge(initialTopicKnowledge(prepared.lesson)); setTranscript(emptyTranscript); setLog([]);
+      setLesson(prepared.lesson); setInstructorGuide(prepared.instructorGuide); setKnowledge(initialTopicKnowledge(prepared.lesson)); setTranscript(emptyTranscript); setLog([]); setEmotionLog([]);
       const callbacks: RealtimeCallbacks = {
         tokenProvider: fetchToken, lesson: prepared.lesson, assessEvidence: lessonAssessor(prepared.lesson, prepared.instructorGuide), audioRenderer,
         onConnectionState: state => { if (version === startupVersion.current) setConnection(state); }, onActivity: activity => { if (version === startupVersion.current) setActivity(activity); },
-        onLog: entry => { if (version === startupVersion.current) setLog(l => [...l.slice(-249), { ...entry, raw: entry.type.includes("audio.delta") || entry.type === "input_audio_buffer.append" ? "[audio chunk omitted]" : entry.raw }]); },
+        onLog: entry => {
+          if (version !== startupVersion.current) return;
+          setLog(l => [...l.slice(-249), { ...entry, raw: entry.type.includes("audio.delta") || entry.type === "input_audio_buffer.append" ? "[audio chunk omitted]" : entry.raw }]);
+          if (entry.type === "client.emotion_used" || entry.type === "client.emotion_acknowledgment") setEmotionLog(events => [...events, entry]);
+        },
         onClose: info => { if (version === startupVersion.current) setError(info.code === 1000 ? null : info.message); },
         onError: message => { if (version === startupVersion.current) setError(message); }, onMicChange: active => { if (version === startupVersion.current) setMicActive(active); }, onMicLevel: level => { if (version === startupVersion.current) setMicLevel(level); },
         onKnowledgeChange: state => { if (version === startupVersion.current) setKnowledge(state); },
@@ -140,7 +147,7 @@ export default function App() {
       <section className="conversation-card" aria-label={`Conversation with ${studentName || "your student"}`}>
         <div className="card-head"><div><span className={`dot ${connected ? "dot-open" : ""}`} /><strong>{studentName || "Your student"}</strong><span className="subtle">Your curious student</span></div><span className="pill">{mode === "avatar" ? audioRenderer === "tagged-tts" ? "HIGGS AVATAR + TAGGED TTS" : "HIGGS AVATAR + REALTIME" : mode === "mock" ? "LOCAL MOCK · TEXT ONLY" : audioRenderer === "tagged-tts" ? "HIGGS TAGGED TTS" : "HIGGS REALTIME"}</span></div>
         <div className="controls">
-          <div className="session-controls"><select aria-label="Conversation mode" value={mode} onChange={e => { setMode(e.target.value as Mode); setError(null); setTranscript(emptyTranscript); setKnowledge({}); setLesson(null); setInstructorGuide([]); }} disabled={busy}><option value="avatar">Boson talking avatar</option><option value="voice">Boson voice + photo</option><option value="mock">Local mock (text only)</option></select>
+          <div className="session-controls"><select aria-label="Conversation mode" value={mode} onChange={e => { setMode(e.target.value as Mode); setError(null); setTranscript(emptyTranscript); setKnowledge({}); setLesson(null); setInstructorGuide([]); setEmotionLog([]); }} disabled={busy}><option value="avatar">Boson talking avatar</option><option value="voice">Boson voice + photo</option><option value="mock">Local mock (text only)</option></select>
           {mode !== "mock" && <select aria-label="Speech rendering mode" value={audioRenderer} onChange={e => setAudioRenderer(e.target.value as AudioRenderer)} disabled={busy}><option value="realtime">Realtime audio</option><option value="tagged-tts">Emotion-tagged Higgs TTS</option></select>}
           {!busy ? <button className="primary" disabled={!topic.trim() || (mode === "avatar" && (!avatarStatus?.configured || !presets.length))} onClick={() => void start()}>Start lesson <span>↗</span></button> : <button onClick={end}>{preparing ? "Cancel lesson setup" : connection === "connecting" ? "Cancel connection" : "End lesson"}</button>}</div>
           {mode !== "mock" && <MicButton active={micActive} level={micLevel} disabled={!connected || micPending} onToggle={() => void toggleMic()} />}
@@ -166,7 +173,7 @@ export default function App() {
         <div className="conversation-actions"><button className="link" disabled={!connected || activity === "thinking" || activity === "speaking"} onClick={() => send(`Can you teach back what I explained? Try a small example and tell me what still confuses you, ${studentName}.`)}>Ask {studentName} to teach back ↗</button></div>
       </section>
       <aside className="sidebar">
-        <LearningMap lesson={lesson} state={knowledge} preparing={preparing} studentName={studentName} instructorGuide={instructorGuide} />
+        <LearningMap lesson={lesson} state={knowledge} preparing={preparing} studentName={studentName} instructorGuide={instructorGuide} emotionRecords={emotionRecords} />
         <section className="hint-card"><span className="spark">✳</span><p className="eyebrow">A PLACE TO START</p><h3>{lesson?.openingQuestion ?? "What would you like your student to learn?"}</h3><p>{studentName} starts with a blank knowledge state and follows the facts you choose to teach, rather than a preset concept sequence.</p><div className="hint-divider" /><p className="fine-print">Ask {studentName} what they learned from the facts you taught.</p></section>
         <a className="avatar-link" href="https://docs.boson.ai/models/higgs-avatar/realtime-sessions" target="_blank" rel="noreferrer">Boson live avatar setup guide ↗</a>
       </aside>

@@ -22,7 +22,7 @@ class Events {
   emit(message: object) { this.onmessage?.({ data: JSON.stringify(message) }); }
 }
 const fetchMock = vi.fn(async (_path: string, _options?: unknown) => ({ ok: true, json: async () => ({ id: "lesson-1", url: "wss://test.livekit.cloud", token: "scoped-user-token" }) }));
-const callbacks = () => ({ tokenProvider: vi.fn(async () => { throw new Error("No direct Boson browser connection in avatar mode"); }), onConnectionState: vi.fn(), onMicChange: vi.fn(), onMicLevel: vi.fn(), onActivity: vi.fn(), onError: vi.fn(), onKnowledgeChange: vi.fn(), onServerEvent: vi.fn() });
+const callbacks = () => ({ tokenProvider: vi.fn(async () => { throw new Error("No direct Boson browser connection in avatar mode"); }), onConnectionState: vi.fn(), onMicChange: vi.fn(), onMicLevel: vi.fn(), onActivity: vi.fn(), onError: vi.fn(), onKnowledgeChange: vi.fn(), onServerEvent: vi.fn(), onLog: vi.fn() });
 beforeEach(() => {
   vi.useFakeTimers(); state.rooms = []; Events.instances = []; fetchMock.mockClear();
   vi.stubGlobal("fetch", fetchMock); vi.stubGlobal("EventSource", Events);
@@ -60,6 +60,23 @@ describe("integrated Boson talking-avatar client", () => {
     await open(client);
     expect(fetchMock).toHaveBeenCalledWith("/api/avatar/lessons", expect.objectContaining({
       body: JSON.stringify({ avatarId: "builtin_claire_v1", lessonId: undefined, audioRenderer: "tagged-tts" }),
+    }));
+    await client.close();
+  });
+  it("logs tagged avatar emotions and tracks the next teacher acknowledgment", async () => {
+    const cb = callbacks();
+    const client = new LiveAvatarClient(cb, "builtin_claire_v1", vi.fn(), "tagged-tts");
+    await open(client);
+    const events = Events.instances[0];
+    events.emit({ kind: "emotion", item_id: "response-1", emotion: "anger", tags: "<|emotion:anger|><|style:shouting|>" });
+    events.emit({ kind: "server_event", event: { type: "conversation.item.input_audio_transcription.completed", transcript: "I hear that you're frustrated." } });
+    expect(cb.onLog).toHaveBeenCalledWith(expect.objectContaining({
+      type: "client.emotion_used",
+      raw: expect.objectContaining({ emotion: "anger", tags: "<|emotion:anger|><|style:shouting|>" }),
+    }));
+    expect(cb.onLog).toHaveBeenCalledWith(expect.objectContaining({
+      type: "client.emotion_acknowledgment",
+      raw: expect.objectContaining({ emotion: "anger", acknowledged: true }),
     }));
     await client.close();
   });

@@ -21,6 +21,7 @@ import type { LessonDefinition, EvidenceAssessor } from "../state/lesson";
 import { studentToolFeedback } from "../state/topicKnowledge";
 import { buildRealtimeUrl, type RealtimeCredentials } from "./runtimeConfig";
 import { buildTaggedSpeechInput, chooseSpeechEmotion, cleanSpokenTranscript } from "./speechTags";
+import { EmotionAcknowledgmentTracker } from "./emotionAcknowledgment";
 
 export type ConnectionState = "idle" | "connecting" | "open" | "closing" | "closed";
 export type AudioRenderer = "realtime" | "tagged-tts";
@@ -76,6 +77,7 @@ export class RealtimeClient {
   private taggedAudioPlaying = false;
   private taggedAudioAbort: AbortController | null = null;
   private taggedItems = new Set<string>();
+  private emotionAcknowledgment: EmotionAcknowledgmentTracker;
 
   /**
    * The assistant item currently producing audio. This is what we truncate on
@@ -121,6 +123,7 @@ export class RealtimeClient {
 
   constructor(callbacks: RealtimeCallbacks) {
     this.cb = callbacks;
+    this.emotionAcknowledgment = new EmotionAcknowledgmentTracker(result => this.log("info", result.type, result));
     this.knowledge = createKnowledgeTracker(callbacks.onKnowledgeChange, callbacks.lesson, callbacks.assessEvidence);
     this.player = new RingPlayer((speaking) => {
       if (!speaking) {
@@ -293,6 +296,7 @@ export class RealtimeClient {
     this.cb.onServerEvent?.(evt);
     if (evt.type === SERVER.transcriptionCompleted && typeof evt.item_id === "string" && typeof evt.transcript === "string") {
       this.knowledge.observeHuman(evt.item_id, evt.transcript);
+      this.emotionAcknowledgment.observeTeacher(evt.transcript);
     }
 
     switch (evt.type) {
@@ -480,7 +484,7 @@ export class RealtimeClient {
     const generation = this.generation;
     const turn = this.turnEpoch;
     const emotion = chooseSpeechEmotion();
-    const taggedInput = buildTaggedSpeechInput(transcript, emotion);
+    const taggedInput = emotion ? buildTaggedSpeechInput(transcript, emotion) : transcript;
     const abort = new AbortController();
     this.taggedAudioAbort?.abort();
     this.taggedAudioAbort = abort;
@@ -507,6 +511,7 @@ export class RealtimeClient {
       const reader = response.body.getReader();
       let remainder = new Uint8Array(0);
       let receivedAudio = false;
+      let emotionRecorded = false;
       try {
         while (true) {
           const { done, value } = await reader.read();
@@ -523,6 +528,15 @@ export class RealtimeClient {
           if (completeLength > 0) {
             this.player.enqueuePcm(combined.slice(0, completeLength).buffer);
             receivedAudio = true;
+            if (!emotionRecorded) {
+              if (emotion) {
+                this.emotionAcknowledgment.noteEmotion(emotion, itemId ?? undefined);
+                this.log("info", "client.emotion_used", { emotion, item_id: itemId, transcript, tags: taggedInput.slice(0, taggedInput.indexOf(transcript)) });
+              } else {
+                this.log("info", "client.emotion_not_selected", { item_id: itemId, transcript });
+              }
+              emotionRecorded = true;
+            }
             this.taggedAudioPlaying = true;
             this.setActivity("speaking");
           }

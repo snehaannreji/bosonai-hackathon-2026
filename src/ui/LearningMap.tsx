@@ -1,11 +1,13 @@
 import type { KnowledgeState } from "../state/knowledge";
 import type { InstructorGuideFact, LessonDefinition } from "../state/lesson";
+import type { EmotionDashboardRecord } from "../realtime/emotionDashboard";
+import { EmotionResponsePanel } from "./EmotionResponsePanel";
 const reviewLabels = {
   unverified: "Unverified",
   accurate: "Instructor-verified accurate",
   misconception: "Misconception detected",
 } as const;
-export function LearningMap({ lesson, state, preparing, studentName = "Alex", instructorGuide = [] }: { lesson: LessonDefinition | null; state: KnowledgeState; preparing: boolean; studentName?: string; instructorGuide?: InstructorGuideFact[] }) {
+export function LearningMap({ lesson, state, preparing, studentName = "Alex", instructorGuide = [], emotionRecords = [] }: { lesson: LessonDefinition | null; state: KnowledgeState; preparing: boolean; studentName?: string; instructorGuide?: InstructorGuideFact[]; emotionRecords?: EmotionDashboardRecord[] }) {
   const understood = lesson?.concepts.filter(c => state[c.id]?.status === "understood").length ?? 0;
   const count = lesson?.concepts.length ?? 0;
   const progress = count ? Math.round(understood / count * 100) : 0;
@@ -17,6 +19,7 @@ export function LearningMap({ lesson, state, preparing, studentName = "Alex", in
   const taughtFactIds = new Set(Object.values(state).flatMap(concept => concept.taughtGuideFactIds ?? []));
   return <section className="knowledge-card"><p className="eyebrow">THE LEARNING MAP</p><h2>{studentName}’s learning &amp; instructor check</h2><p className="subtle">{lesson ? `Learning ${lesson.topic}` : "A new topic. A fresh perspective."}</p>
     {lesson ? <><div className="progress-line"><span>{understood} of {count} concepts understood</span><span>{progress}%</span></div><div className="progress-track"><div style={{ width: `${progress}%` }} /></div>
+      <EmotionResponsePanel records={emotionRecords} />
       <div className="concepts" aria-live="polite">{lesson.concepts.map((concept, i) => <article className="concept" key={concept.id}><div className="concept-top"><span className="concept-number">0{i + 1}</span><h3>{concept.label}</h3></div><span className="subtle">Instructor check</span><span className={`knowledge-status ${state[concept.id]?.status ?? "unknown"}`}>{state[concept.id]?.status ?? "unknown"}</span><p>{state[concept.id]?.evidence ?? "Waiting for your explanation."}</p>{state[concept.id]?.belief && <p className="assessment-reason"><strong>{studentName}’s working belief · {reviewLabels[state[concept.id].beliefAccuracy ?? "unverified"]}:</strong> {state[concept.id].belief}</p>}{state[concept.id]?.groundTruth && <p className="assessment-reason"><strong>Ground truth for you:</strong> {state[concept.id].groundTruth}</p>}{state[concept.id]?.reason && <p className="assessment-reason"><strong>Instructor feedback:</strong> {state[concept.id].reason}</p>}</article>)}</div>
       {instructorGuide.length > 0 && <section className="instructor-guide" aria-label="Instructor teaching guide"><h3>Teach from your notes</h3><p className="subtle">These independent points come from your uploaded notes. Points are marked complete when your explanation covers them; they are not assigned to lesson concepts.</p><ul>{instructorGuide.map(fact => { const complete = taughtFactIds.has(fact.id); return <li key={fact.id} className={complete ? "guide-complete" : ""}><span className={`guide-check ${complete ? "complete" : ""}`} aria-label={complete ? "Covered in explanation" : "Not yet covered"}>{complete ? "✓" : "○"}</span><span>{fact.text}</span></li>; })}</ul><p className="guide-progress">{instructorGuide.filter(fact => taughtFactIds.has(fact.id)).length} of {instructorGuide.length} points taught</p></section>}
       {otherTaughtFacts.length > 0 && <section className="instructor-guide" aria-label="Other instructor-taught facts"><h3>Other facts taught</h3><p className="subtle">These topic facts were recognized in your explanations, even though they are not on the uploaded-notes checklist.</p><ul>{otherTaughtFacts.map(fact => <li className="guide-complete" key={fact.id}><span className="guide-check complete" aria-label="Covered in explanation">✓</span><span>{fact.text}</span><small>Independent topic fact</small></li>)}</ul><p className="guide-progress">{otherTaughtFacts.length} additional fact{otherTaughtFacts.length === 1 ? "" : "s"} taught</p></section>}

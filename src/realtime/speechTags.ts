@@ -20,13 +20,15 @@ export function isSpeechEmotion(value: unknown): value is SpeechEmotion {
   return typeof value === "string" && SPEECH_EMOTIONS.includes(value as SpeechEmotion);
 }
 
-export function chooseSpeechEmotion(random = Math.random): SpeechEmotion {
+export function chooseSpeechEmotion(random = Math.random): SpeechEmotion | null {
   const selection = random() * 12;
-  if (selection < 4) return "anger";
-  if (selection < 8) return "sadness";
-  if (selection < 9) return "amusement";
-  if (selection < 10) return "contentment";
-  if (selection < 11) return "contemplation";
+  if (selection < 6) return null;
+  const emotionSelection = selection - 6;
+  if (emotionSelection < 2) return "anger";
+  if (emotionSelection < 4) return "sadness";
+  if (emotionSelection < 4.5) return "amusement";
+  if (emotionSelection < 5) return "contentment";
+  if (emotionSelection < 5.5) return "contemplation";
   return "surprise";
 }
 

@@ -2,6 +2,8 @@ import { Room, RoomEvent, Track, type RemoteAudioTrack, type RemoteVideoTrack } 
 import type { Activity, AudioRenderer, RealtimeCallbacks } from "./RealtimeClient";
 import type { KnowledgeState } from "../state/knowledge";
 import type { ServerEvent } from "./events";
+import { EmotionAcknowledgmentTracker } from "./emotionAcknowledgment";
+import { isSpeechEmotion } from "./speechTags";
 
 async function post(path: string, body = {}, keepalive = false) {
   const response = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), keepalive });
@@ -25,8 +27,17 @@ export class LiveAvatarClient {
   private meter: ReturnType<typeof setInterval> | null = null;
   private timeout: ReturnType<typeof setTimeout> | null = null;
   private release: Promise<unknown> = Promise.resolve();
+  private emotionAcknowledgment: EmotionAcknowledgmentTracker;
   private unload = () => { if (this.lessonId) navigator.sendBeacon(`/api/avatar/lessons/${this.lessonId}/end`, ""); };
-  constructor(private cb: RealtimeCallbacks, private avatarId: string, private onVideo: (track: RemoteVideoTrack | null) => void, private audioRenderer: AudioRenderer = "realtime") {}
+  constructor(private cb: RealtimeCallbacks, private avatarId: string, private onVideo: (track: RemoteVideoTrack | null) => void, private audioRenderer: AudioRenderer = "realtime") {
+    this.emotionAcknowledgment = new EmotionAcknowledgmentTracker(result => this.cb.onLog?.({
+      id: Date.now() + Math.random(),
+      dir: "info",
+      type: result.type,
+      at: Date.now(),
+      raw: result,
+    }));
+  }
   get micActive() { return this.mic; }
 
   async connect() {
@@ -66,13 +77,22 @@ export class LiveAvatarClient {
       this.events = new EventSource(`/api/avatar/lessons/${lesson.id}/events`);
       this.events.onmessage = event => {
         if (generation !== this.generation) return;
-        const message = JSON.parse(event.data) as { kind: string; event?: ServerEvent; state?: KnowledgeState; activity?: Activity; message?: string };
+        const message = JSON.parse(event.data) as { kind: string; event?: ServerEvent; state?: KnowledgeState; activity?: Activity; message?: string; emotion?: string; tags?: string; item_id?: string };
         if (message.kind === "server_event" && message.event) {
           this.cb.onServerEvent?.(message.event);
           this.cb.onLog?.({ id: Date.now() + Math.random(), dir: "recv", type: message.event.type, at: Date.now(), raw: message.event });
+          if (message.event.type === "client.emotion_used" && isSpeechEmotion(message.event.emotion)) {
+            this.emotionAcknowledgment.noteEmotion(message.event.emotion, typeof message.event.item_id === "string" ? message.event.item_id : undefined);
+          }
+          if (message.event.type === "conversation.item.input_audio_transcription.completed" && typeof message.event.transcript === "string") {
+            this.emotionAcknowledgment.observeTeacher(message.event.transcript);
+          }
           if (message.event.type === "error") this.cb.onError?.(String((message.event.error as { message?: string } | undefined)?.message ?? "Boson reported a voice session error."));
         } else if (message.kind === "knowledge" && message.state) this.cb.onKnowledgeChange?.(message.state);
-        else if (message.kind === "emotion") this.cb.onLog?.({ id: Date.now() + Math.random(), dir: "info", type: "emotion.tts_selected", at: Date.now(), raw: message });
+        else if (message.kind === "emotion" && isSpeechEmotion(message.emotion)) {
+          this.emotionAcknowledgment.noteEmotion(message.emotion, message.item_id);
+          this.cb.onLog?.({ id: Date.now() + Math.random(), dir: "info", type: "client.emotion_used", at: Date.now(), raw: message });
+        }
         else if (message.kind === "tts_error") this.cb.onError?.(message.message ?? "Tagged speech synthesis failed.");
         else if (message.kind === "activity" && message.activity) this.cb.onActivity?.(message.activity === "listening" && !this.mic ? "idle" : message.activity);
         else if (message.kind === "ready") { this.voiceReady = true; this.maybeReady(); }

@@ -15,8 +15,9 @@ describe("tagged Higgs TTS input", () => {
   });
 
   it("chooses an emotion from the supported set and rejects unknown values", () => {
-    expect(chooseSpeechEmotion(() => 0)).toBe("anger");
-    expect(chooseSpeechEmotion(() => 0.34)).toBe("sadness");
+    expect(chooseSpeechEmotion(() => 0)).toBeNull();
+    expect(chooseSpeechEmotion(() => 0.5)).toBe("anger");
+    expect(chooseSpeechEmotion(() => 0.67)).toBe("sadness");
     expect(chooseSpeechEmotion(() => 0.99)).toBe("surprise");
     expect(isSpeechEmotion("sadness")).toBe(true);
     expect(isSpeechEmotion("curiosity")).toBe(false);

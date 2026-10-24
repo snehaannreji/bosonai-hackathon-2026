@@ -125,7 +125,7 @@ export function createAvatarRouter(apiKey: string | undefined, lessonService: Le
       else if (message.kind === "server_event" && message.event && typeof message.event === "object") lesson.bridge.handle(message.event as { type: string });
       else if (message.kind === "ready") { lesson.ready = true; publish(lesson, message); }
       else if (message.kind === "error") error(lesson, typeof message.message === "string" ? message.message : "Avatar agent failed.");
-      else if (message.kind === "activity") publish(lesson, message);
+      else if (message.kind === "activity" || message.kind === "emotion" || message.kind === "tts_error") publish(lesson, message);
     });
     child.on("error", () => error(lesson, "Could not start the avatar worker. Run npm run avatar:setup."));
     child.on("close", () => { if (lesson.ending) lessons.delete(lesson.id); });

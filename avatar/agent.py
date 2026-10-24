@@ -41,6 +41,33 @@ def report(kind, **values):
     print(json.dumps({"kind": kind, **values}), flush=True)
 
 
+def response_logs_fact(event):
+    response = event.get("response") if isinstance(event, dict) else None
+    output = response.get("output", []) if isinstance(response, dict) else []
+    if any(
+        isinstance(item, dict)
+        and item.get("type") == "function_call"
+        and item.get("name") == "update_understanding"
+        for item in output
+    ):
+        return True
+    return event.get("type") == "response.function_call_arguments.done" and event.get("name") == "update_understanding"
+
+
+def should_apply_emotion(has_fact_log):
+    return not has_fact_log
+
+
+def choose_speech_emotion(rng=random.random):
+    if rng() >= 0.5:
+        return None
+    return random.choices(
+        ("anger", "sadness", "amusement", "contentment", "contemplation", "surprise"),
+        weights=(4, 4, 1, 1, 1, 1),
+        k=1,
+    )[0]
+
+
 def install_stop_handlers(loop, stop):
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -120,6 +147,8 @@ async def main():
             truncate_item = None
             forwarded = set()
             tts_generation = 0
+            response_transcripts = []
+            response_has_fact_log = False
 
             @output.on("playback_finished")
             def played(event):
@@ -170,15 +199,11 @@ async def main():
                     except (ValueError, KeyError): pass
                 stop.set()
 
-            async def synthesize_tagged_speech(text, item_id, generation):
+            async def synthesize_tagged_speech(text, item_id, generation, apply_emotion=True):
                 nonlocal current_item, speaking
                 if not isinstance(text, str) or not text.strip():
                     return
-                emotion = random.choices(
-                    ("anger", "sadness", "amusement", "contentment", "contemplation", "surprise"),
-                    weights=(4, 4, 1, 1, 1, 1),
-                    k=1,
-                )[0]
+                emotion = choose_speech_emotion() if apply_emotion else None
                 tags = {
                     "anger": "<|emotion:anger|><|style:shouting|>",
                     "sadness": "<|emotion:sadness|><|sfx:crying|>",
@@ -187,7 +212,7 @@ async def main():
                     "contemplation": "<|emotion:contemplation|><|prosody:pause|>",
                     "surprise": "<|emotion:surprise|>",
                 }
-                report("emotion", item_id=item_id, emotion=emotion, tags=tags[emotion])
+                speech_input = f"{tags[emotion]}{text.strip()}" if emotion else text.strip()
 
                 def request_audio():
                     response = requests.post(
@@ -195,7 +220,7 @@ async def main():
                         headers=BOSON,
                         json={
                             "model": "higgs-tts-3",
-                            "input": f"{tags[emotion]}{text.strip()}",
+                            "input": speech_input,
                             "voice": "default",
                             "response_format": "pcm",
                             "stream": True,
@@ -218,6 +243,7 @@ async def main():
                         pending = bytearray()
                         current_item = item_id
                         received_audio = False
+                        emotion_reported = False
                         chunks = iter(response.iter_content(chunk_size=1920))
                         while True:
                             has_chunk, chunk = await asyncio.to_thread(next_chunk, chunks)
@@ -232,6 +258,9 @@ async def main():
                                 pcm = bytes(pending[:1920])
                                 del pending[:1920]
                                 await output.capture_frame(rtc.AudioFrame(pcm, 24000, 1, len(pcm) // 2))
+                                if emotion and not emotion_reported:
+                                    report("emotion", item_id=item_id, emotion=emotion, transcript=text.strip(), tags=tags[emotion])
+                                    emotion_reported = True
                                 received_audio = True
                                 speaking = True
                                 set_activity("speaking")
@@ -241,6 +270,9 @@ async def main():
                             if pending:
                                 pcm = bytes(pending)
                                 await output.capture_frame(rtc.AudioFrame(pcm, 24000, 1, len(pcm) // 2))
+                                if emotion and not emotion_reported:
+                                    report("emotion", item_id=item_id, emotion=emotion, transcript=text.strip(), tags=tags[emotion])
+                                    emotion_reported = True
                                 received_audio = True
                                 speaking = True
                                 set_activity("speaking")
@@ -258,6 +290,7 @@ async def main():
 
             async def receive():
                 nonlocal current_item, speaking, truncate_item, tts_generation
+                nonlocal response_transcripts, response_has_fact_log
                 async for message in ws:
                     event = json.loads(message)
                     kind = event["type"]
@@ -266,20 +299,29 @@ async def main():
                         report("ready"); set_activity("listening")
                     elif kind == "response.created":
                         tts_generation += 1
+                        response_transcripts = []
+                        response_has_fact_log = False
                     elif kind == "response.output_audio.delta":
                         if AUDIO_RENDERER != "tagged-tts":
                             if event.get("item_id"): current_item = event["item_id"]
                             pcm = base64.b64decode(event["delta"])
                             await output.capture_frame(rtc.AudioFrame(pcm, 24000, 1, len(pcm) // 2))
                             speaking = True; set_activity("speaking")
+                    elif kind == "response.function_call_arguments.done":
+                        if event.get("name") == "update_understanding":
+                            response_has_fact_log = True
                     elif kind == "response.output_audio_transcript.done" and AUDIO_RENDERER == "tagged-tts":
                         item_id = event.get("item_id")
                         if isinstance(item_id, str):
                             current_item = item_id
-                        task(synthesize_tagged_speech(event.get("transcript", ""), item_id, tts_generation))
+                        response_transcripts.append((event.get("transcript", ""), item_id, tts_generation))
                     elif kind == "response.done":
                         if AUDIO_RENDERER == "tagged-tts":
-                            pass
+                            response_has_fact_log = response_has_fact_log or response_logs_fact(event)
+                            apply_emotion = should_apply_emotion(response_has_fact_log)
+                            for transcript, item_id, generation in response_transcripts:
+                                task(synthesize_tagged_speech(transcript, item_id, generation, apply_emotion))
+                            response_transcripts = []
                         elif speaking:
                             output.flush()
                         elif activity != "listening":

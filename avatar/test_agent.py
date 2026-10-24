@@ -48,6 +48,24 @@ class FakeSocket:
         return stream()
 
 class AgentTests(unittest.IsolatedAsyncioTestCase):
+    def test_fact_logging_responses_and_immediate_followups_are_neutral(self):
+        tool_response = {"response": {"output": [
+            {"type": "function_call", "name": "update_understanding", "call_id": "fact-1"},
+        ]}}
+        self.assertTrue(agent.response_logs_fact(tool_response))
+        self.assertTrue(agent.response_logs_fact({
+            "type": "response.function_call_arguments.done",
+            "name": "update_understanding",
+        }))
+        self.assertFalse(agent.should_apply_emotion(agent.response_logs_fact(tool_response)))
+        self.assertTrue(agent.should_apply_emotion(False))
+
+    def test_tagged_emotion_is_selected_for_half_of_eligible_replies(self):
+        self.assertIsNone(agent.choose_speech_emotion(lambda: 0.5))
+        with patch.object(agent.random, "choices", return_value=["anger"]) as choices:
+            self.assertEqual(agent.choose_speech_emotion(lambda: 0.49), "anger")
+        choices.assert_called_once()
+
     def setUp(self):
         self.room = FakeRoom()
         self.post = MagicMock(return_value=SimpleNamespace(ok=True, json=lambda: {"id": "test-session"}))

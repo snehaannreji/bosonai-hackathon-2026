@@ -38,12 +38,11 @@ describe("arbitrary-topic lesson state", () => {
     expect(prompt).toContain("Do not describe yourself as curious");
     expect(prompt).not.toContain("curious student");
     expect(prompt).toContain("then ask the required specific follow-up about each fact taught");
-    expect(prompt).toContain("Express the chosen emotion only through vocal delivery");
+    expect(prompt).toContain("Express emotion only through vocal delivery");
     expect(prompt).toContain("Never output emotion labels, bracketed stage directions, markup, or control tokens");
-    expect(prompt).toContain("use anger on about 1 in 3 replies");
-    expect(prompt).toContain("sadness on about 1 in 3");
-    expect(prompt).toContain("Vary intensity from subtle to intense");
-    expect(prompt).toContain("Vary intensity from subtle to intense");
+    expect(prompt).toContain("On about half of conversational replies");
+    expect(prompt).toContain("On the other half, use a neutral");
+    expect(prompt).toContain("Vary emotional intensity from subtle to intense");
     expect(prompt).toContain("Let anger sound forceful when appropriate");
     expect(prompt).toContain("Let sadness sound slower and lower-pitched when appropriate");
     expect(prompt).toContain("never start with a label such as '[disappointed]'");
