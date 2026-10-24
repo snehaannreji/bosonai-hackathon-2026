@@ -69,12 +69,15 @@ describe("instructor reference notes", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("does not attempt a network lesson in local mock mode", async () => {
-    const fetchMock = vi.fn();
+  it("uses only the local lesson endpoint in mock mode so it receives a whiteboard owner credential", async () => {
+    const lesson = { ...mockLesson("A topic"), id: "mock-server", whiteboardOwnerToken: "owner-secret" };
+    const fetchMock = vi.fn(async (_input: string, _init?: RequestInit) => ({ ok: true, json: async () => ({ lesson, instructorGuide: [] }) }));
     vi.stubGlobal("fetch", fetchMock);
     const prepared = await prepareLesson("A topic", true, 0, "Claire", "Instructor reference");
     expect(prepared.lesson.mock).toBe(true);
+    expect(prepared.lesson.whiteboardOwnerToken).toBe("owner-secret");
     expect(prepared.instructorGuide).toEqual([]);
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledWith("/api/lessons", expect.objectContaining({ method: "POST" }));
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({ mock: true, instructorNotes: "Instructor reference" });
   });
 });

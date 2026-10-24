@@ -27,6 +27,22 @@ Open **http://localhost:5173**. The command starts the Node token server on port
 
 Use headphones to minimize echo. Microphone access needs localhost or HTTPS. Chrome is the recommended first demo browser. Text input is also available in live mode; Maya still answers with Boson speech.
 
+### Use an iPad or tablet as the whiteboard
+
+Start a lesson on the computer, open **Whiteboard**, and choose **Connect tablet**. The app creates a lesson-scoped pairing link and displays it as a QR code. Scan it with the tablet camera; the tablet opens a drawing-only view with pen, eraser, colors, stroke width, undo, redo, clear, connection status, and disconnect. It never requests microphone or speaker access.
+
+For local testing, put the MacBook and tablet on the same Wi-Fi network and keep `npm run dev` running. Vite and the TeachBack server listen on the local network; when the laptop page is opened as `localhost`, the server automatically puts the MacBook's current private IPv4 address into the QR link. Allow incoming Node connections through the macOS firewall if prompted. If automatic address selection is wrong—common with VPNs or multiple adapters—set this in `.env` and restart:
+
+```dotenv
+PUBLIC_APP_URL=http://YOUR_MAC_WIFI_IP:5173
+```
+
+In a deployed environment, set `PUBLIC_APP_URL=https://your-teachback-domain.example` unless the reverse proxy forwards the public host and protocol correctly. The same origin must proxy ordinary `/api` requests and WebSocket upgrades at `/api/whiteboard/ws` to the Node server.
+
+Boards synchronize normalized vector marks, including live stroke previews, rather than images. The server retains the latest mark snapshot in memory so a tablet can reconnect while its 10-minute pairing link remains valid. Each lesson has a cryptographically random token, separate board state, operation deduplication, size validation, and explicit revocation when the lesson ends. The token is stored in the QR URL fragment so it is not sent in the initial tablet page request; no Boson, LiveKit, Google, or other privileged credential is exposed. Restarting the Node server clears active shared boards.
+
+Turn-taking uses Realtime 1.5's server VAD with native response creation and interruption enabled. Voice mode clears its PCM queue and truncates the unheard assistant audio when speech starts. Avatar mode continuously forwards the LiveKit microphone—even while the avatar is speaking—then clears synchronized avatar playback on the same supported speech-start event. No inactivity response timer is enabled: after asking a question, the student waits for a real user turn. The development event drawer records speech start/end, response start/end, playback clearing, truncation, avatar interruption, and suppressed stale tool continuations without logging raw audio.
+
 **No key?** Run the same commands, choose **Local mock (text only)**, then **Start lesson**. Enter a topic and type an explanation. This deterministic fixture uses transcript grounding and simulated assessments, but has **no microphone, no speech, no live AI and no avatar**. It never silently replaces a failed Boson connection.
 
 ## Maya, Kai and student intelligence
@@ -72,6 +88,7 @@ Higgs audio → official RingPlayer → speakers
 Topic input → server-side Boson structured call → lesson concepts/criteria
 Higgs events → official transcript reducer → transcript
 Higgs update_understanding tool → quoted human evidence → independent Boson assessment → learning map
+Laptop/tablet pointer events → lesson-token WebSocket relay → shared vector marks → existing canvas/vision pipeline
 ```
 
 | Area | Files | Suggested owner |
@@ -173,7 +190,7 @@ npm run build
 npm start
 ```
 
-Open http://localhost:3000. `npm run preview` is a static preview only and does not include the credential server. Both app modes are a local, single-user hackathon prototype. Add authentication and credential issuance limits before deploying publicly; the token server currently binds to localhost.
+Open http://localhost:3000. `npm run preview` is a static preview only and does not include the credential server. Both app modes are a local, single-user hackathon prototype. Add authentication and credential issuance limits before deploying publicly. The development server binds to the local network to support tablet pairing; firewall access should be limited to trusted networks.
 
 ## Next three small tasks
 

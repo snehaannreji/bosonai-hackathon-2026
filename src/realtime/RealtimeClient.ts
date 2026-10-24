@@ -105,7 +105,7 @@ export class RealtimeClient {
    * own function_call_output, but there must be exactly ONE response.create
    * afterwards — so the batch is collected here and flushed together.
    */
-  private toolBatch: { promises: Promise<void>[]; outputs: ClientEvent[] } | null = null;
+  private toolBatch: { promises: Promise<void>[]; outputs: ClientEvent[]; epoch: number } | null = null;
 
   /**
    * ⚠ The single most important line in this file.
@@ -327,6 +327,7 @@ export class RealtimeClient {
         this.taggedAudioStarted = false;
         this.toolBatch = null;
         this.setActivity("thinking");
+        this.info(`AI response started${responseId(evt) ? ` (${responseId(evt)})` : ""}.`);
         break;
 
       case SERVER.functionCallArgsDone:
@@ -335,6 +336,7 @@ export class RealtimeClient {
 
       case SERVER.responseDone:
         this.onResponseDone(evt);
+        this.info(`AI response finished${responseId(evt) ? ` (${responseId(evt)})` : ""} with status ${responseStatus(evt) ?? "unknown"}.`);
         break;
 
       case SERVER.audioTranscriptDone:
@@ -346,10 +348,12 @@ export class RealtimeClient {
       case SERVER.speechStarted:
         ++this.turnEpoch;
         // The user started talking over the model. This is the barge-in path.
+        this.info(`User speech detected${typeof evt.item_id === "string" ? ` (${evt.item_id})` : ""}; interruption handling started.`);
         void this.handleBargeIn();
         break;
 
       case SERVER.speechStopped:
+        this.info(`User speech ended${typeof evt.item_id === "string" ? ` (${evt.item_id})` : ""}.`);
         this.setActivity("thinking");
         break;
 
@@ -418,7 +422,7 @@ export class RealtimeClient {
     if (this.handledCallIds.has(callId)) return;
     this.handledCallIds.add(callId);
 
-    if (!this.toolBatch) this.toolBatch = { promises: [], outputs: [] };
+    if (!this.toolBatch) this.toolBatch = { promises: [], outputs: [], epoch: this.turnEpoch };
     const batch = this.toolBatch;
     const generation = this.generation;
     const startedAt = Date.now();
@@ -478,7 +482,7 @@ export class RealtimeClient {
       this.taggedAudioPending = false;
     }
     if (this.toolBatch && this.toolBatch.promises.length > 0) {
-      void this.flushToolBatch();
+      void this.flushToolBatch(responseStatus(evt));
     } else if (!this.taggedAudioPending && !this.taggedAudioPlaying) {
       this.setActivity(this.capture.active ? "listening" : "idle");
     }
@@ -581,10 +585,9 @@ export class RealtimeClient {
    * a call_id it never hears back about. Send response.create per tool instead
    * of once, and you get two replies talking over each other.
    */
-  private async flushToolBatch(): Promise<void> {
+  private async flushToolBatch(status?: string): Promise<void> {
     const batch = this.toolBatch;
     const generation = this.generation;
-    const epoch = this.turnEpoch;
     this.toolBatch = null;
     if (!batch || batch.promises.length === 0) return;
 
@@ -601,7 +604,11 @@ export class RealtimeClient {
     for (const out of batch.outputs) this.send(out);
 
     // A newer human turn must not be interrupted by a delayed assessment.
-    if (epoch === this.turnEpoch) this.send(responseCreate());
+    if (batch.epoch === this.turnEpoch && status !== "cancelled" && status !== "failed") {
+      this.send(responseCreate());
+    } else {
+      this.info(`Tool continuation suppressed (${status ?? "superseded turn"}).`);
+    }
   }
 
   /**
@@ -627,8 +634,10 @@ export class RealtimeClient {
     this.taggedAudioPlaying = false;
     this.setActivity("listening");
     const playedMs = await this.player.flush();
+    this.info(`Audio playback cleared at ${Math.round(playedMs)} ms.`);
     if (this.currentAssistantItemId && playedMs > 0) {
       this.send(truncateItem(this.currentAssistantItemId, playedMs));
+      this.info(`Interrupted assistant item truncated (${this.currentAssistantItemId}).`);
     }
     this.currentAssistantItemId = null;
   }
@@ -653,4 +662,14 @@ export class RealtimeClient {
 
 function isToolResult(value: unknown): value is ToolResult {
   return Boolean(value && typeof value === "object" && "summary" in value);
+}
+
+function responseId(evt: ServerEvent): string | undefined {
+  const id = (evt.response as { id?: unknown } | undefined)?.id;
+  return typeof id === "string" ? id : undefined;
+}
+
+function responseStatus(evt: ServerEvent): string | undefined {
+  const status = (evt.response as { status?: unknown } | undefined)?.status;
+  return typeof status === "string" ? status : undefined;
 }

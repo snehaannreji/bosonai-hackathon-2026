@@ -3,37 +3,39 @@ import type { InstructorGuideFact, LessonDefinition } from "../state/lesson";
 import type { EmotionDashboardRecord } from "../realtime/emotionDashboard";
 import { EmotionResponsePanel } from "./EmotionResponsePanel";
 import { studentName as getStudentName } from "../state/student";
-const reviewLabels = {
-  unverified: "Unverified",
-  accurate: "Instructor-verified accurate",
-  misconception: "Misconception detected",
-} as const;
+
+const reviewLabels = { unverified: "Not yet verified", accurate: "Instructor verified", misconception: "Misconception found" } as const;
+const statusLabels = { unknown: "Learning", partial: "In progress", misunderstood: "Misunderstood", understood: "Understood" } as const;
+
 export function LearningMap({ lesson, state, preparing, studentName: suppliedName, instructorGuide = [], emotionRecords = [] }: { lesson: LessonDefinition | null; state: KnowledgeState; preparing: boolean; studentName?: string; instructorGuide?: InstructorGuideFact[]; emotionRecords?: EmotionDashboardRecord[] }) {
   const studentName = suppliedName ?? lesson?.studentName ?? getStudentName(lesson?.student);
-  const startingHunch = lesson?.concepts.find(concept => concept.initialBelief)?.initialBelief;
   const understood = lesson?.concepts.filter(c => state[c.id]?.status === "understood").length ?? 0;
   const count = lesson?.concepts.length ?? 0;
   const progress = count ? Math.round(understood / count * 100) : 0;
-  const learnedFacts = lesson ? Object.values(state).flatMap(conceptState => conceptState.learnedFacts ?? []).map(fact => ({
-    ...fact,
-    concept: fact.origin === "instructor-notes" || !fact.conceptId ? null : lesson.concepts.find(item => item.id === fact.conceptId)?.label ?? null,
-  })).filter((fact, index, facts) => facts.findIndex(item => item.id === fact.id) === index) : [];
-  const otherTaughtFacts = learnedFacts.filter(fact => fact.origin === "conversation" && fact.independentTopicFact && fact.teachingComplete);
-  const taughtFactIds = new Set(Object.values(state).flatMap(concept => concept.taughtGuideFactIds ?? []));
-  return <section className="knowledge-card"><p className="eyebrow">THE LEARNING MAP</p><h2>{studentName}’s learning &amp; instructor check</h2><p className="subtle">{lesson ? `Learning ${lesson.topic}` : "A new topic. A fresh perspective."}</p>
-    {lesson ? <><div className="progress-line"><span>{understood} of {count} concepts understood</span><span>{progress}%</span></div><div className="progress-track"><div style={{ width: `${progress}%` }} /></div>
-      <div className="learning-state-grid">
-        <EmotionResponsePanel records={emotionRecords} />
-        <section className="learning-state-panel concepts-panel" aria-label="Learning concepts">
-          <h3>Learning concepts</h3>
-          <div className="concepts" aria-live="polite">{lesson.concepts.map((concept, i) => <article className="concept" key={concept.id}><div className="concept-top"><span className="concept-number">0{i + 1}</span><h3>{concept.label}</h3></div><span className="subtle">Instructor check</span><span className={`knowledge-status ${state[concept.id]?.status ?? "unknown"}`}>{state[concept.id]?.status ?? "unknown"}</span><p>{state[concept.id]?.evidence ?? "Waiting for your explanation."}</p>{state[concept.id]?.belief && <p className="assessment-reason"><strong>{studentName}’s working belief · {reviewLabels[state[concept.id].beliefAccuracy ?? "unverified"]}:</strong> {state[concept.id].belief}</p>}{state[concept.id]?.groundTruth && <p className="assessment-reason"><strong>Ground truth for you:</strong> {state[concept.id].groundTruth}</p>}{state[concept.id]?.reason && <p className="assessment-reason"><strong>Instructor feedback:</strong> {state[concept.id].reason}</p>}</article>)}</div>
-        </section>
-        {instructorGuide.length > 0 && <section className="learning-state-panel instructor-guide" aria-label="Instructor teaching guide"><h3>Teach from your notes</h3><p className="subtle">Independent points from your notes, checked against your explanation.</p><ul>{instructorGuide.map(fact => { const complete = taughtFactIds.has(fact.id); return <li key={fact.id} className={complete ? "guide-complete" : ""}><span className={`guide-check ${complete ? "complete" : ""}`} aria-label={complete ? "Covered in explanation" : "Not yet covered"}>{complete ? "✓" : "○"}</span><span>{fact.text}</span></li>; })}</ul><p className="guide-progress">{instructorGuide.filter(fact => taughtFactIds.has(fact.id)).length} of {instructorGuide.length} points taught</p></section>}
-        {otherTaughtFacts.length > 0 && <section className="learning-state-panel instructor-guide" aria-label="Other instructor-taught facts"><h3>Other facts taught</h3><ul>{otherTaughtFacts.map(fact => <li className="guide-complete" key={fact.id}><span className="guide-check complete" aria-label="Covered in explanation">✓</span><span>{fact.text}</span><small>Independent topic fact</small></li>)}</ul><p className="guide-progress">{otherTaughtFacts.length} additional fact{otherTaughtFacts.length === 1 ? "" : "s"} taught</p></section>}
-        <section className="learning-state-panel learned-facts" aria-live="polite"><h3>What {studentName} has been taught</h3><p className="subtle">Facts from your explanations and notes.</p>{learnedFacts.length ? <ul>{learnedFacts.map(fact => <li key={fact.id}><span className={`guide-check ${fact.teachingComplete ? "complete" : ""}`} aria-label={fact.teachingComplete ? "Teaching recorded" : "Not yet confirmed as taught"}>{fact.teachingComplete ? "✓" : "○"}</span><span className={`knowledge-status ${fact.review === "misconception" ? "misunderstood" : fact.review === "unverified" ? "unknown" : "understood"}`}>{reviewLabels[fact.review]}</span><strong>{fact.origin === "instructor-notes" ? "From your notes" : fact.independentTopicFact ? "Independent topic fact" : fact.concept ? `Matches ${fact.concept}` : "From conversation"}</strong><p>{fact.text}</p>{fact.groundTruth && <p className="assessment-reason"><strong>Correction for you:</strong> {fact.groundTruth}</p>}</li>)}</ul> : <p className="fine-print">Facts will appear here after the instructor check confirms they were taught.</p>}</section>
-      </div>
-    </> : <div className="lesson-map-empty"><span>✳</span><p>{preparing ? "Finding three starting points for your topic…" : "Enter a topic and start a lesson. Alex’s learning map will appear here."}</p></div>}
-    <section className="hint-card"><span className="spark">✳</span><p className="eyebrow">{startingHunch ? `${studentName.toUpperCase()}’S STARTING HUNCH` : "A PLACE TO START"}</p><h3>{startingHunch ? `“${startingHunch}”` : lesson?.openingQuestion ?? "What would you like your student to learn?"}</h3><p>{startingHunch ? `Help ${studentName} reason through this idea. Explain why, then try an example together.` : `${studentName} starts with a blank knowledge state and follows the facts you choose to teach, rather than a preset concept sequence.`}</p><div className="hint-divider" /><p className="fine-print">Ask {studentName} to explain the facts you taught back in a new example.</p></section>
-    <p className="fine-print">{lesson ? `The student’s working belief is separate from the instructor-only fact check. Accuracy is marked only when the check can affirm the claim; otherwise it remains unverified. Response style is set to ${lesson.familiarity}% questioning; topic knowledge starts blank.` : "Learning updates use evidence from your explanations. This is not a formal assessment."}{lesson?.mock ? " Local mock assessments are simulated for UI development." : ""}</p>
+  const startingHunch = lesson?.concepts.find(concept => concept.initialBelief)?.initialBelief;
+  const learnedFacts = lesson ? Object.values(state).flatMap(value => value.learnedFacts ?? []).filter((fact, index, all) => all.findIndex(item => item.id === fact.id) === index) : [];
+  const taughtFactIds = new Set(Object.values(state).flatMap(value => value.taughtGuideFactIds ?? []));
+
+  return <section className="knowledge-card polished-learning"><div className="learning-heading"><div><p className="eyebrow">LEARNING PROGRESS</p><h2>{studentName}’s understanding</h2></div><span className="progress-count"><strong>{understood}</strong> / {count || 3}</span></div>
+    {lesson ? <>
+      <div className="progress-summary"><div><span>{understood === count ? "All concepts understood" : `${count - understood} concept${count - understood === 1 ? "" : "s"} still developing`}</span><strong>{progress}%</strong></div><div className="progress-track" aria-label={`${progress}% understood`}><div style={{ width: `${progress}%` }} /></div></div>
+      <div className="concept-card-list" aria-live="polite">{lesson.concepts.map((concept, index) => {
+        const value = state[concept.id]; const status = value?.status ?? "unknown";
+        return <details className={`concept-card status-${status}`} key={concept.id}><summary><span className="concept-index">{String(index + 1).padStart(2, "0")}</span><span className="concept-title"><strong>{concept.label}</strong><small>{statusLabels[status]}</small></span><span className={`concept-status ${status}`}>{status === "understood" ? "✓" : status === "misunderstood" ? "!" : "·"}</span></summary><div className="concept-detail">
+          <div><span>What {studentName} has learned</span><p>{value?.evidence ?? "Waiting for an explanation with enough evidence."}</p></div>
+          {value?.belief && <div><span>{studentName}’s working belief · {reviewLabels[value.beliefAccuracy ?? "unverified"]}</span><p>{value.belief}</p></div>}
+          {value?.reason && <div><span>Instructor verification</span><p>{value.reason}</p></div>}
+          {value?.groundTruth && <div className="misconception-note"><span>Correction for the instructor</span><p>{value.groundTruth}</p></div>}
+          {concept.initialBelief && <div><span>Starting misconception</span><p>{concept.initialBelief}</p></div>}
+        </div></details>;
+      })}</div>
+      {startingHunch && <div className="hunch-callout"><span>STARTING HUNCH</span><p>“{startingHunch}”</p><small>Help {studentName} test and revise this idea through explanation and examples.</small></div>}
+      <details className="verification-details"><summary>Instructor verification &amp; lesson evidence</summary><div className="verification-grid">
+        {instructorGuide.length > 0 && <section><h3>Reference checklist</h3><ul>{instructorGuide.map(fact => <li key={fact.id} className={taughtFactIds.has(fact.id) ? "complete" : ""}><span>{taughtFactIds.has(fact.id) ? "✓" : "○"}</span>{fact.text}</li>)}</ul></section>}
+        <section><h3>Recorded teaching evidence</h3>{learnedFacts.length ? <ul>{learnedFacts.map(fact => <li key={fact.id}><span>{fact.teachingComplete ? "✓" : "○"}</span><div>{fact.text}<small>{reviewLabels[fact.review]}</small></div></li>)}</ul> : <p>No facts have passed the instructor check yet.</p>}</section>
+        {emotionRecords.length > 0 && <EmotionResponsePanel records={emotionRecords} />}
+      </div></details>
+      <p className="learning-disclaimer">{studentName}’s working understanding is separate from instructor verification. Progress changes only when evidence from the lesson satisfies the evaluator.</p>
+    </> : <div className="lesson-map-empty"><span>✳</span><p>{preparing ? "Building a learning map for this topic…" : "Your student’s evidence-backed progress will appear here when the lesson starts."}</p></div>}
   </section>;
 }

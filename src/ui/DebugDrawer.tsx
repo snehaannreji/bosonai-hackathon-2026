@@ -10,12 +10,12 @@ import type { LogEntry } from "../realtime/RealtimeClient";
  * app for the rest of the tutorial — every later part is easier to debug with it
  * open.
  */
-export function DebugDrawer({ entries }: { entries: LogEntry[] }) {
+export function DebugDrawer({ entries, embedded = false }: { entries: LogEntry[]; embedded?: boolean }) {
   const [open, setOpen] = useState(false);
   const [expanded, setExpanded] = useState<number | null>(null);
 
   return (
-    <section className={`drawer ${open ? "open" : ""}`}>
+    <section className={`${embedded ? "developer-log" : "drawer"} ${open ? "open" : ""}`}>
       <button className="drawer-toggle" onClick={() => setOpen((o) => !o)}>
         {open ? "▼" : "▶"} Event log ({entries.length})
       </button>

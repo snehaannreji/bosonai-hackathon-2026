@@ -16,6 +16,8 @@ export interface LessonDefinition {
   concepts: LessonConcept[];
   mock: boolean;
   student?: StudentSettings;
+  /** Browser-only authorization for creating/revoking this lesson's tablet link. */
+  whiteboardOwnerToken?: string;
 }
 export interface InstructorGuideFact { id: string; text: string; conceptId: string | null; sourceText?: string }
 export interface HumanTurn { id: string; text: string }

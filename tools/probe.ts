@@ -70,9 +70,10 @@ type Turn =
   | { kind: "barge"; value: string }
   | { kind: "audio"; value: string };
 
-function parseArgs(argv: string[]): { turns: Turn[]; out: string | null } {
+function parseArgs(argv: string[]): { turns: Turn[]; out: string | null; silenceMs: number } {
   const turns: Turn[] = [];
   let out: string | null = null;
+  let silenceMs = 500;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--text") turns.push({ kind: "text", value: argv[++i] });
@@ -80,12 +81,13 @@ function parseArgs(argv: string[]): { turns: Turn[]; out: string | null } {
     else if (a === "--barge") turns.push({ kind: "barge", value: argv[++i] });
     else if (a === "--audio") turns.push({ kind: "audio", value: argv[++i] });
     else if (a === "--out") out = argv[++i];
+    else if (a === "--silence-ms") silenceMs = Math.max(0, Number(argv[++i]) || 0);
     else if (!a.startsWith("--")) turns.push({ kind: "text", value: a });
   }
   if (turns.length === 0) {
     turns.push({ kind: "text", value: "Hi Alex, what do you think the gradient tells us?" });
   }
-  return { turns, out };
+  return { turns, out, silenceMs };
 }
 
 function loadApiKey(): string {
@@ -213,7 +215,7 @@ function summarize(evt: Record<string, unknown>): string {
 }
 
 async function main() {
-  const { turns, out } = parseArgs(process.argv.slice(2));
+  const { turns, out, silenceMs } = parseArgs(process.argv.slice(2));
   const apiKey = loadApiKey();
   const key = await mintEphemeralKey(apiKey);
   console.log(`Minted temporary credential. Connecting to ${WS_URL}\n`);
@@ -335,12 +337,20 @@ async function main() {
 
   await ready;
 
+  // Prepare interruption audio before starting the preceding turn. TTS can
+  // take longer than a short Realtime reply; synthesizing it after the reply
+  // starts misses the barge-in window and only tests an ordinary next turn.
+  const preparedBargeAudio = new Map<number, Int16Array>();
+  for (let i = 0; i < turns.length; i++) {
+    if (turns[i].kind === "barge") preparedBargeAudio.set(i, await synthesize(apiKey, turns[i].value));
+  }
+
   for (let ti = 0; ti < turns.length; ti++) {
     const turn = turns[ti];
     if (turn.kind === "barge") {
       // Synthesise FIRST. Text-to-speech takes a second or two, and the window
       // we are aiming at is only a couple of seconds wide.
-      const samples = await synthesize(apiKey, turn.value);
+      const samples = preparedBargeAudio.get(ti)!;
 
       // Wait for a response to actually be in flight — created but not done.
       const deadline = Date.now() + 20_000;
@@ -386,8 +396,10 @@ async function main() {
     await Promise.race([waitForReply, sleep(45_000)]);
   }
 
-  // Let any trailing events land before closing.
-  await sleep(500);
+  // Keep the session open without generating anything. This explicitly tests
+  // that silence does not create a second assistant response.
+  if (silenceMs > 500) console.log(`\n>>> waiting silently for ${silenceMs} ms\n`);
+  await sleep(silenceMs);
   ws.close(1000, "probe complete");
 }
 

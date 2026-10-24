@@ -76,9 +76,13 @@ def install_stop_handlers(loop, stop):
             signal.signal(sig, lambda _signum, _frame: loop.call_soon_threadsafe(stop.set))
 
 
-async def send_microphone_frame(ws, frame, avatar_speaking):
-    if avatar_speaking:
-        return
+async def send_microphone_frame(ws, frame):
+    """Continuously forward the user's LiveKit microphone to Realtime.
+
+    Browser/LiveKit echo cancellation handles the remote avatar audio. Dropping
+    frames while the avatar speaks prevents Realtime's native full-duplex VAD
+    from ever detecting a human barge-in.
+    """
     audio = base64.b64encode(bytes(frame.data)).decode()
     await ws.send(json.dumps({"type": "input_audio_buffer.append", "audio": audio}))
 
@@ -149,6 +153,7 @@ async def main():
             tts_generation = 0
             response_transcripts = []
             response_has_fact_log = False
+            tagged_items = set()
 
             @output.on("playback_finished")
             def played(event):
@@ -165,7 +170,7 @@ async def main():
                 stream = rtc.AudioStream(track, sample_rate=24000, num_channels=1)
                 try:
                     async for event in stream:
-                        await send_microphone_frame(ws, event.frame, speaking)
+                        await send_microphone_frame(ws, event.frame)
                 except websockets.ConnectionClosed: pass
                 finally:
                     await stream.aclose()
@@ -304,6 +309,7 @@ async def main():
                         tts_generation += 1
                         response_transcripts = []
                         response_has_fact_log = False
+                        report("turn_debug", name="ai_response_started", response_id=event.get("response", {}).get("id"))
                     elif kind == "response.output_audio.delta":
                         if AUDIO_RENDERER != "tagged-tts":
                             if event.get("item_id"): current_item = event["item_id"]
@@ -315,10 +321,15 @@ async def main():
                             response_has_fact_log = True
                     elif kind == "response.output_audio_transcript.done" and AUDIO_RENDERER == "tagged-tts":
                         item_id = event.get("item_id")
+                        if isinstance(item_id, str) and item_id in tagged_items:
+                            report("turn_debug", name="duplicate_tagged_audio_suppressed", item_id=item_id)
+                            continue
                         if isinstance(item_id, str):
                             current_item = item_id
+                            tagged_items.add(item_id)
                         response_transcripts.append((event.get("transcript", ""), item_id, tts_generation))
                     elif kind == "response.done":
+                        report("turn_debug", name="ai_response_finished", response_id=event.get("response", {}).get("id"), status=event.get("response", {}).get("status"))
                         if AUDIO_RENDERER == "tagged-tts":
                             response_has_fact_log = response_has_fact_log or response_logs_fact(event)
                             apply_emotion = should_apply_emotion(response_has_fact_log)
@@ -331,10 +342,14 @@ async def main():
                             set_activity("listening")
                     elif kind == "input_audio_buffer.speech_started":
                         tts_generation += 1
+                        report("turn_debug", name="user_speech_detected", item_id=event.get("item_id"), interrupted=speaking)
                         if speaking:
                             truncate_item = current_item; output.clear_buffer(); speaking = False
+                            report("turn_debug", name="avatar_playback_interrupted", item_id=current_item)
                         set_activity("listening")
-                    elif kind == "input_audio_buffer.speech_stopped": set_activity("thinking")
+                    elif kind == "input_audio_buffer.speech_stopped":
+                        report("turn_debug", name="user_speech_ended", item_id=event.get("item_id"))
+                        set_activity("thinking")
                 stop.set()
 
             receiver = task(receive())

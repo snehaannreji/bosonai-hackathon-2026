@@ -6,32 +6,35 @@ import {
   type TranscriptState,
 } from "../state/transcriptStore";
 
-export function TranscriptPanel({ state, topic, name = "Maya" }: { state: TranscriptState; topic?: string; name?: string }) {
+export function TranscriptPanel({ state, topic, name = "Maya", collapsed = false, onToggle }: { state: TranscriptState; topic?: string; name?: string; collapsed?: boolean; onToggle?: () => void }) {
   const items = toList(state);
   const endRef = useRef<HTMLDivElement>(null);
+  const follow = useRef(true);
 
-  // Follow the conversation as it grows.
   useEffect(() => {
     const panel = endRef.current?.closest(".transcript-wrap");
-    if (panel) panel.scrollTop = panel.scrollHeight;
-  }, [items.length, items[items.length - 1]]);
+    if (!panel) return;
+    const onScroll = () => { follow.current = panel.scrollHeight - panel.scrollTop - panel.clientHeight < 80; };
+    panel.addEventListener("scroll", onScroll, { passive: true });
+    return () => panel.removeEventListener("scroll", onScroll);
+  }, []);
+
+  // Follow new speech only while the reader is already near the latest turn.
+  useEffect(() => {
+    const panel = endRef.current?.closest(".transcript-wrap");
+    if (panel && follow.current && !collapsed) panel.scrollTo({ top: panel.scrollHeight, behavior: "smooth" });
+  }, [items.length, items[items.length - 1], collapsed]);
 
   if (items.length === 0) {
     return <p className="empty">Your conversation will appear here. {topic ? `Turn on your microphone and teach ${name} about ${topic}.` : "Choose a topic and start a lesson."}</p>;
   }
 
   return (
-    <section className="transcript-panel">
+    <section className={`transcript-panel ${collapsed ? "is-collapsed" : ""}`}>
       <div className="transcript-head">
-        <span>Transcript</span>
-        <button
-          className="link"
-          onClick={() => void navigator.clipboard.writeText(toPlainText(state))}
-        >
-          copy
-        </button>
+        <span>Conversation <small>{items.length} updates</small></span><div><button className="link" onClick={() => void navigator.clipboard.writeText(toPlainText(state))}>Copy</button>{onToggle && <button className="link" onClick={onToggle}>{collapsed ? "Expand" : "Collapse"}</button>}</div>
       </div>
-      {items.map((item) => (
+      {(collapsed ? items.slice(-2) : items).map((item) => (
         <TurnBubble key={item.itemId} item={item} name={name} />
       ))}
       <div ref={endRef} />

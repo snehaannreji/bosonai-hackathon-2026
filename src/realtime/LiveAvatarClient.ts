@@ -82,7 +82,7 @@ export class LiveAvatarClient {
       this.events = new EventSource(`/api/avatar/lessons/${lesson.id}/events`);
       this.events.onmessage = event => {
         if (generation !== this.generation) return;
-        const message = JSON.parse(event.data) as { kind: string; event?: ServerEvent; state?: KnowledgeState; activity?: Activity; message?: string; emotion?: string; tags?: string; item_id?: string };
+        const message = JSON.parse(event.data) as { kind: string; event?: ServerEvent; state?: KnowledgeState; activity?: Activity; message?: string; emotion?: string; tags?: string; item_id?: string; response_id?: string; status?: string; interrupted?: boolean; name?: string };
         if (message.kind === "server_event" && message.event) {
           this.cb.onServerEvent?.(message.event);
           this.cb.onLog?.({ id: Date.now() + Math.random(), dir: "recv", type: message.event.type, at: Date.now(), raw: message.event });
@@ -99,6 +99,7 @@ export class LiveAvatarClient {
           this.cb.onLog?.({ id: Date.now() + Math.random(), dir: "info", type: "client.emotion_used", at: Date.now(), raw: message });
         }
         else if (message.kind === "tts_error") this.cb.onError?.(message.message ?? "Tagged speech synthesis failed.");
+        else if (message.kind === "turn_debug") this.cb.onLog?.({ id: Date.now() + Math.random(), dir: "info", type: `turn.${message.name ?? "event"}`, at: Date.now(), raw: message });
         else if (message.kind === "activity" && message.activity) this.cb.onActivity?.(message.activity === "listening" && !this.mic ? "idle" : message.activity);
         else if (message.kind === "ready") { this.voiceReady = true; this.maybeReady(); }
         else if (message.kind === "error") this.fail(message.message ?? "Avatar session failed.");

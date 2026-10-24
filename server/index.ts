@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { createServer } from "node:http";
 import express from "express";
 import dotenv from "dotenv";
 import { resolve } from "node:path";
@@ -7,6 +8,7 @@ import { buildTaggedSpeechInput, isSpeechEmotion } from "../src/realtime/speechT
 import { createAvatarRouter } from "./avatarSessions";
 import { createLessonService } from "./lessons";
 import { createVisionService } from "./vision";
+import { createWhiteboardSync } from "./whiteboardSync";
 
 dotenv.config();
 
@@ -50,12 +52,14 @@ app.disable("x-powered-by");
 app.use("/api", (_req, res, next) => { res.setHeader("Cache-Control", "no-store"); next(); });
 app.use("/api/vision", express.json({ limit: "1500kb" }), createVisionService());
 app.use(express.json({ limit: "128kb" }));
-const lessonService = createLessonService(BOSON_API_KEY);
+const whiteboards = createWhiteboardSync();
+app.use("/api/whiteboard", whiteboards.router);
+const lessonService = createLessonService(BOSON_API_KEY, whiteboards.authorizeLesson);
 app.use("/api/lessons", lessonService.router);
 const avatars = createAvatarRouter(BOSON_API_KEY, lessonService);
 app.use("/api/avatar", avatars.router);
-process.once("SIGTERM", () => { void avatars.close().finally(() => process.exit(0)); });
-process.once("SIGINT", () => { void avatars.close().finally(() => process.exit(0)); });
+process.once("SIGTERM", () => { whiteboards.close(); void avatars.close().finally(() => process.exit(0)); });
+process.once("SIGINT", () => { whiteboards.close(); void avatars.close().finally(() => process.exit(0)); });
 app.get("/api/config", (_req, res) => res.json({ voiceConfigured: Boolean(BOSON_API_KEY), ...realtimeSettings }));
 app.post("/api/speech", async (req, res) => {
   if (!BOSON_API_KEY) return res.status(503).json({ error: "Add BOSON_API_KEY to .env to use tagged Higgs TTS." });
@@ -168,10 +172,13 @@ app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
 if (process.env.NODE_ENV === "production") {
   app.use(express.static(resolve("dist")));
+  app.get("*", (req, res, next) => req.path.startsWith("/api/") ? next() : res.sendFile(resolve("dist/index.html")));
 }
 
-app.listen(PORT, "127.0.0.1", () => {
-  console.log(`Token server listening on http://localhost:${PORT}`);
+const server = createServer(app);
+whiteboards.attach(server);
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`TeachBack server listening on http://localhost:${PORT}`);
   if (!BOSON_API_KEY) {
     console.warn(
       "No Boson key configured. Live voice is unavailable; Local mock is ready for UI development.",

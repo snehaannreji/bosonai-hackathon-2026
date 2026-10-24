@@ -207,6 +207,18 @@ it("does not start delayed assessment speech over a new human turn in an arbitra
   expect(cb.send).not.toHaveBeenCalledWith({ type: "response.create" });
 });
 
+it("does not continue a cancelled tool response after speech has already interrupted it", async () => {
+  const cb = { onEvent: vi.fn(), onKnowledge: vi.fn(), send: vi.fn() };
+  const bridge = new AvatarToolBridge(cb);
+  bridge.handle({ type: "response.created", response: { id: "r1" } });
+  bridge.handle({ ...call, call_id: "cancelled-tool" });
+  bridge.handle({ type: "input_audio_buffer.speech_started", item_id: "u2" });
+  bridge.handle({ type: "response.done", response: { id: "r1", status: "cancelled" } });
+  await vi.waitFor(() => expect(cb.send).toHaveBeenCalledTimes(1));
+  expect(cb.send.mock.calls[0][0]).toMatchObject({ type: "conversation.item.create", item: { type: "function_call_output" } });
+  expect(cb.send).not.toHaveBeenCalledWith({ type: "response.create" });
+});
+
 it("keeps a novice's incorrect explanation and instructor correction separate in avatar mode", async () => {
   const { mockLesson } = await import("../src/state/lesson");
   const lesson = { ...mockLesson("Photosynthesis"), familiarity: 0, mock: false };

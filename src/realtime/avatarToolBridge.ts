@@ -5,7 +5,7 @@ import { studentToolFeedback } from "../state/topicKnowledge";
 import { CLIENT_TOOL_RESULT } from "../state/transcriptStore";
 import { functionCallOutput, responseCreate, type ClientEvent, type ServerEvent } from "./events";
 
-interface Batch { promises: Promise<void>[]; outputs: ClientEvent[] }
+interface Batch { promises: Promise<void>[]; outputs: ClientEvent[]; epoch: number }
 const SUPPORTED_EMOTIONS = new Set([
   "elation", "amusement", "contentment", "anger", "sadness",
   "contemplation", "surprise", "pride", "fear", "affection",
@@ -49,7 +49,7 @@ export class AvatarToolBridge {
         }
       }
       const batch = this.batch; this.batch = null;
-      if (batch) void this.flush(batch, this.epoch, response?.status);
+      if (batch) void this.flush(batch, response?.status);
     }
   }
   private takeQuestionContext() {
@@ -57,15 +57,15 @@ export class AvatarToolBridge {
     this.lastAssistantQuestion = null;
     return question;
   }
-  private async flush(batch: Batch, epoch: number, status?: string) {
+  private async flush(batch: Batch, status?: string) {
     await Promise.all(batch.promises);
     for (const output of batch.outputs) this.cb.send(output);
-    if (epoch === this.epoch && status !== "cancelled" && status !== "failed") this.cb.send(responseCreate());
+    if (batch.epoch === this.epoch && status !== "cancelled" && status !== "failed") this.cb.send(responseCreate());
   }
   private run(event: ServerEvent) {
     if (typeof event.call_id !== "string" || this.handled.has(event.call_id)) return;
     this.handled.add(event.call_id);
-    if (!this.batch) this.batch = { promises: [], outputs: [] };
+    if (!this.batch) this.batch = { promises: [], outputs: [], epoch: this.epoch };
     const batch = this.batch;
     const callId = event.call_id;
     const promise = (async () => {

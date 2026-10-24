@@ -36,7 +36,7 @@ $env:AVATAR_SETUP_PYTHON = "C:\Path\To\Python310\python.exe"
 npm run avatar:setup
 ```
 
-Restart `npm run dev` after editing `.env`. Open **http://localhost:5173**, enter a topic, choose **Boson talking avatar**, select a **Student avatar**, optionally edit the student name, and click **Start lesson**. The preset name is used by default and updates when you choose another preset; a custom name is used in the conversation and classroom interface. Enable the microphone once the connection and actual video track are ready. Let the student finish speaking before responding; microphone audio is not forwarded during avatar playback, which prevents speaker echo from triggering another response. Check that the transcript and understanding map update. Use **End lesson** when finished.
+Restart `npm run dev` after editing `.env`. Open **http://localhost:5173**, enter a topic, choose **Boson talking avatar**, select a **Student avatar**, optionally edit the student name, and click **Start lesson**. The preset name is used by default and updates when you choose another preset; a custom name is used in the conversation and classroom interface. Enable the microphone once the connection and actual video track are ready. The microphone remains connected while the avatar speaks so Higgs Realtime can detect a barge-in; browser/LiveKit echo cancellation and noise suppression prevent the remote track from being treated as the user. Check that the transcript and understanding map update. Use **End lesson** when finished.
 
 Choose **Realtime audio** to use the current low-latency Realtime speech, or **Emotion-tagged Higgs TTS** to synthesize the completed response with inline Higgs TTS emotion tags before playback. Tagged TTS is available for both talking-avatar and voice/photo sessions; the avatar mode forwards its synthesized 24 kHz PCM to the synchronized avatar output. This adds some startup latency, then streams PCM as it is generated. Emotion tags are applied on about half of eligible conversational replies; the rest use neutral speech. Anger and sadness are selected most often among tagged replies; amusement, contentment, contemplation, and surprise are also included. Anger/sadness can include shouting/crying style cues, and contemplation can include a prosody pause. The debug drawer records the selected emotion and tag, and synthesis errors are shown in the classroom instead of silently falling back to Realtime audio. The learning-map dashboard has an **Emotion & teacher response** section showing each student anger/sadness cue and whether the teacher's next transcribed response acknowledged it. While the avatar's response is calling `update_understanding` to log a taught fact, that response is synthesized without an emotion tag; the subsequent conversational response can use emotion normally. This keeps the fact-logging response from sounding emotionally tagged before the teacher has a chance to react to the student's conversational reply. Acknowledgment is a lightweight transcript-based check, not audio sentiment analysis. The API key remains on the local server. See the [Higgs TTS tags guide](https://docs.boson.ai/models/higgs-tts/tags) for supported controls.
 
@@ -65,7 +65,7 @@ Python --protocol events--> Node evidence validator --SSE--> React transcript/ma
 - `src/realtime/avatarToolBridge.ts` uses the same topic-specific tracker and independent evidence checks as voice mode, grounds evidence in actual human turns, deduplicates tool call IDs, and sends one continuation per response batch. State/transcripts flow to the existing React interface.
 - `src/ui/LiveAvatarVideo.tsx` shows an actual remote video track, or a clearly labeled waiting state. Connection becomes usable only after the voice agent and video track are both present.
 
-Each lesson has its own room. Only the `user` microphone is forwarded; mic frames are paused during avatar playback to prevent speaker echo from being mistaken for another user turn. The avatar listens only to the `agent` participant. Boson renders the face and voice together. `playback_finished` supplies the played duration, so the worker truncates conversation history to match what was heard.
+Each lesson has its own room. Only the `user` microphone is forwarded, continuously, including while the avatar speaks. The avatar listens only to the `agent` participant. Boson renders the face and voice together. On Realtime's supported `input_audio_buffer.speech_started` event, the worker clears synchronized avatar playback immediately; `playback_finished` supplies the played duration, so it truncates conversation history to match what was actually heard.
 
 When a learning update fails, the student receives a per-lesson anger level that rises with consecutive failures and resets after progress. They can sound sharply angry at an explanation that is not helping and demand a different approach; the roleplay does not include threats, demeaning personal attacks, or slurs.
 
@@ -105,7 +105,7 @@ The main classroom loads its session config directly from TypeScript at startup.
 
 `GET /api/avatar/status` reports missing LiveKit settings and whether the Python environment exists. `GET /api/avatar/presets` reads your full Boson catalog and resolves the configured default. Neither starts a billable avatar session. `POST /api/avatar/lessons` accepts a listed `avatarId`, or uses the resolved default if omitted; it refuses incomplete settings before creating a room or avatar. Its short-lived room token is intended for the browser. The server remains bound to localhost. Add authentication and issuance limits before public deployment.
 
-The client/bridge unit tests cover readiness, track isolation, microphone controls, tool evidence, tool deduplication, cancellation, and cleanup. The Python dependency import check and TypeScript/build checks pass. A credentialed media smoke test now passes; browser device playback and perceptual sync remain a manual check.
+The client/bridge unit tests cover readiness, track isolation, continuous microphone forwarding, tool evidence, tool deduplication, cancelled continuation suppression, silence, and cleanup. A credentialed interruption probe published real speech through the LiveKit microphone while the avatar was talking: Realtime detected it, synchronized avatar playback was cleared, the student listened and responded, and moving video/audio continued. Browser hardware echo conditions and perceptual lip sync remain a short manual check.
 
 ## Failure cases
 
@@ -136,6 +136,12 @@ npm run probe:avatar
 ```
 
 This uses the configured local server and creates a real, short Boson avatar session, so it consumes API credit. It joins as a headless LiveKit user, receives real video/audio frames, prepares a topic-specific lesson and submits two typed turns through the same classroom endpoints, checks learning events, and requests release in `finally`. It never prints credentials. Captured example frames and the media summary live under gitignored `captures/`. Run it only when another avatar lesson is not active.
+
+To exercise the full interruption path with real LiveKit microphone PCM:
+
+```bash
+npm run probe:avatar -- --topic "Gradient descent" --interrupt-text "Wait, stop. I want to correct that idea."
+```
 
 
 The live probe defaults to photosynthesis. To test another topic, supply its explanation too:

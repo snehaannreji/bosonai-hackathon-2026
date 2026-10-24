@@ -37,7 +37,7 @@ def png(frame, path):
     path.write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack("!2I5B", width, height, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
 
 
-async def main(topic, explanation, avatar_id=None, vision_image=None):
+async def main(topic, explanation, avatar_id=None, vision_image=None, interrupt_text=None):
     def prepare():
         response = requests.post("http://localhost:5173/api/lessons", json={"topic": topic}, timeout=45)
         response.raise_for_status()
@@ -61,6 +61,9 @@ async def main(topic, explanation, avatar_id=None, vision_image=None):
     streams = []
     response_holder = []
     vision_result = None
+    interrupt_pcm = None
+    microphone_source = None
+    microphone_publication = None
     capture_dir = Path("captures"); capture_dir.mkdir(exist_ok=True)
 
     def handle(message):
@@ -113,6 +116,15 @@ async def main(topic, explanation, avatar_id=None, vision_image=None):
         await asyncio.wait_for(attached.wait(), 20)
         print("Server event stream attached; connecting LiveKit user.", flush=True)
         await room.connect(lesson["url"], lesson["token"])
+        if interrupt_text:
+            def synthesize_interrupt():
+                response = requests.post("http://localhost:5173/api/speech", json={"text": interrupt_text, "emotion": "contentment"}, timeout=45)
+                response.raise_for_status()
+                return response.content
+            interrupt_pcm = await asyncio.to_thread(synthesize_interrupt)
+            microphone_source = rtc.AudioSource(24000, 1)
+            microphone_track = rtc.LocalAudioTrack.create_audio_track("probe-microphone", microphone_source)
+            microphone_publication = await room.local_participant.publish_track(microphone_track, rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE))
         print("LiveKit user connected; starting Boson avatar.", flush=True)
         await asyncio.to_thread(post, f"/lessons/{lesson['id']}/start")
         await asyncio.wait_for(ready.wait(), 100)
@@ -131,7 +143,31 @@ async def main(topic, explanation, avatar_id=None, vision_image=None):
         await asyncio.to_thread(post, f"/lessons/{lesson['id']}/text", {"text": question})
         await asyncio.wait_for(transcript_done.wait(), 35)
         if errors: raise RuntimeError(errors[0])
-        await asyncio.sleep(8)  # allow real-time playout of the short spoken reply
+        if interrupt_text:
+            # Transcript completion occurs while synchronized avatar audio is
+            # still playing. Feed real PCM through the LiveKit microphone track
+            # so this exercises worker forwarding, Boson VAD, buffer clearing,
+            # truncation, and the avatar's next response.
+            await asyncio.sleep(0.35)
+            transcript_done.clear()
+            for offset in range(0, len(interrupt_pcm), 4800):
+                chunk = interrupt_pcm[offset:offset + 4800]
+                if len(chunk) % 2: chunk += b"\0"
+                if len(chunk) < 4800: chunk += b"\0" * (4800 - len(chunk))
+                await microphone_source.capture_frame(rtc.AudioFrame(chunk, 24000, 1, len(chunk) // 2))
+            silence = bytes(4800)
+            for _ in range(8):
+                await microphone_source.capture_frame(rtc.AudioFrame(silence, 24000, 1, 2400))
+            await asyncio.wait_for(transcript_done.wait(), 35)
+            if errors: raise RuntimeError(errors[0])
+            interrupted = any(m.get("kind") == "turn_debug" and m.get("name") == "avatar_playback_interrupted" for m in messages)
+            speech_seen = any(m.get("event", {}).get("type") == "input_audio_buffer.speech_started" for m in messages)
+            if not interrupted or not speech_seen:
+                raise RuntimeError("Avatar interruption did not clear playback after LiveKit user speech.")
+            print("PASS: LiveKit speech interrupted synchronized avatar playback.", flush=True)
+            await asyncio.sleep(3)
+        else:
+            await asyncio.sleep(8)  # allow real-time playout of the short spoken reply
         transcript_done.clear()
         await asyncio.to_thread(post, f"/lessons/{lesson['id']}/text", {"text": explanation})
         await asyncio.wait_for(transcript_done.wait(), 35)
@@ -141,10 +177,14 @@ async def main(topic, explanation, avatar_id=None, vision_image=None):
         if counter["video_frames"] < 10 or counter["unique_video_frames"] < 2 or counter["audio_samples"] < 2400:
             raise RuntimeError("Expected moving video and actual audio frames were not received.")
         print("PASS: real avatar video and speech reached the LiveKit user.", flush=True)
-        (capture_dir / "avatar-live-probe-summary.json").write_text(json.dumps({"topic": topic, "concepts": definition["concepts"], "media": counter, "vision": vision_result, "student_transcripts": [m["event"].get("transcript") for m in messages if m.get("event", {}).get("type") == "response.output_audio_transcript.done"], "learning_updates": [m["state"] for m in messages if m.get("kind") == "knowledge"]}, indent=2))
+        (capture_dir / "avatar-live-probe-summary.json").write_text(json.dumps({"topic": topic, "concepts": definition["concepts"], "media": counter, "vision": vision_result, "interruption": {"requested": bool(interrupt_text), "speechDetected": any(m.get("event", {}).get("type") == "input_audio_buffer.speech_started" for m in messages), "avatarPlaybackInterrupted": any(m.get("kind") == "turn_debug" and m.get("name") == "avatar_playback_interrupted" for m in messages)}, "student_transcripts": [m["event"].get("transcript") for m in messages if m.get("event", {}).get("type") == "response.output_audio_transcript.done"], "learning_updates": [m["state"] for m in messages if m.get("kind") == "knowledge"]}, indent=2))
     finally:
         try: await asyncio.to_thread(post, f"/lessons/{lesson['id']}/end")
         finally:
+            if microphone_publication:
+                await room.local_participant.unpublish_track(microphone_publication.sid)
+            if microphone_source:
+                await microphone_source.aclose()
             await room.disconnect()
             for stream in streams: await stream.aclose()
             for pending in tasks: pending.cancel()
@@ -159,8 +199,9 @@ if __name__ == "__main__":
     parser.add_argument("--avatar-id", help="Optional catalog ID; otherwise uses the server's BOSON_AVATAR_ID/default.")
     parser.add_argument("--vision-image", help="Optional real JPEG to analyze and deliver silently before the first turn.")
     parser.add_argument("--explanation", default="Plants need sunlight, water and carbon dioxide for photosynthesis. Chlorophyll in chloroplasts absorbs light, and plants use that energy to make glucose, storing chemical energy and releasing oxygen as a byproduct.")
+    parser.add_argument("--interrupt-text", help="Publish synthesized speech through LiveKit while the avatar's first reply is playing.")
     args = parser.parse_args()
-    try: asyncio.run(main(args.topic, args.explanation, args.avatar_id, args.vision_image))
+    try: asyncio.run(main(args.topic, args.explanation, args.avatar_id, args.vision_image, args.interrupt_text))
     except Exception as error:
         print("FAIL:", type(error).__name__, str(error), flush=True)
         raise SystemExit(1)

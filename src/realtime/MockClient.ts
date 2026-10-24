@@ -3,19 +3,22 @@ import { CONCEPTS } from "../state/knowledge";
 import { createKnowledgeTracker, type KnowledgeContext } from "../state/createKnowledgeTracker";
 import { dispatch } from "../tools/registry";
 import { CLIENT_TOOL_RESULT } from "../state/transcriptStore";
-import { studentName } from "../state/student";
+import { studentName, type StudentSettings } from "../state/student";
+import { misconceptionKey, shouldSurfaceMisconception, soundsLikeCorrection } from "../state/mockMisconceptions";
 
 /** Text-only deterministic UI fixture. No microphone, network or synthesized voice. */
 export class MockClient {
   private active = false;
   private tracker: KnowledgeContext;
   private explanations: string[] = [];
+  private unresolvedMisconception: string | null = null;
+  private resolvedMisconceptions = new Set<string>();
   private sequence = 0;
   readonly micActive = false;
   constructor(private cb: RealtimeCallbacks) { this.tracker = createKnowledgeTracker(cb.onKnowledgeChange, cb.lesson, cb.assessEvidence); }
   async connect() {
     this.active = true;
-    this.tracker.reset(); this.explanations = [];
+    this.tracker.reset(); this.explanations = []; this.unresolvedMisconception = null; this.resolvedMisconceptions.clear();
     this.cb.onConnectionState?.("open");
     this.reply(this.cb.lesson ? `Hey, I’m ${this.cb.lesson.studentName ?? studentName(this.cb.lesson.student)}. ${this.cb.lesson.openingQuestion}` : "Hey, I'm Maya. I thought the gradient points toward the minimum. Is that how it works?");
   }
@@ -29,8 +32,11 @@ export class MockClient {
     this.tracker.observeHuman(item, text);
     this.cb.onServerEvent?.({ type: "conversation.item.input_audio_transcription.completed", item_id: item, transcript: text });
     if (this.cb.lesson) {
+      const settings = this.cb.lesson.student;
       if (/teach back|explain it back|quiz/i.test(text)) {
-        this.reply(this.explanations.length ? `Let me try: ${this.explanations.at(-1)!.slice(0, 220)} Did I explain that clearly?` : `I’m still new to ${this.cb.lesson.topic}. What would you like to teach me first?`);
+        if (!this.explanations.length) this.reply(`I’m still new to ${this.cb.lesson.topic}. What would you like to teach me first?`);
+        else if (settings?.id === "kai") this.reply(`Let me reason it through: ${this.explanations.at(-1)!.slice(0, 190)}. In a new case, I would apply that same rule step by step. Which assumption should I check?`);
+        else this.reply(`Let me put it in everyday terms: ${this.explanations.at(-1)!.slice(0, 190)}. It feels like an example I could picture, but does that comparison hold?`);
         return;
       }
       const call = `mock-tool-${++this.sequence}`;
@@ -40,12 +46,40 @@ export class MockClient {
       this.cb.onServerEvent?.({ type: CLIENT_TOOL_RESULT, call_id: call, result, ms: 0 });
       if (!result.error) this.explanations.push(text);
       const level = this.cb.lesson.student?.level ?? "balanced";
+      const selected: StudentSettings = this.cb.lesson.student ?? { id: "maya", level };
+      if (!result.error && this.unresolvedMisconception && soundsLikeCorrection(text)) {
+        this.resolvedMisconceptions.add(this.unresolvedMisconception); this.unresolvedMisconception = null;
+        this.reply(selected.id === "maya"
+          ? "Oh, that fixes the picture I had. I shouldn’t stretch the example beyond the limits you explained."
+          : "That resolves the gap in my reasoning. The rule depends on that condition, so I shouldn’t apply it universally.");
+        return;
+      }
+      const candidate = misconceptionKey(text, selected);
+      if (!result.error && !this.unresolvedMisconception && !this.resolvedMisconceptions.has(candidate) && shouldSurfaceMisconception(text, selected)) {
+        this.unresolvedMisconception = candidate;
+        this.reply(selected.id === "maya"
+          ? "I’m taking that example to mean it works the same way in every situation. Is that a safe comparison?"
+          : "I’m assuming that rule still holds if one of its conditions changes. Is that necessarily true?");
+        return;
+      }
       if (!result.error && level === "supported") {
         this.reply("Could we go through one simple example, a step at a time?");
         return;
       }
       if (!result.error && level === "quick") {
         this.reply("I see the connection. What changes if we try a different situation?");
+        return;
+      }
+      if (!result.error && settings?.id === "kai") {
+        this.reply(this.cb.lesson.familiarity < 25
+          ? "Okay, I’ll go with that for now. Which assumption makes the conclusion hold?"
+          : "I can follow that step. What assumption makes the conclusion hold?");
+        return;
+      }
+      if (!result.error && settings?.id === "maya") {
+        this.reply(this.cb.lesson.familiarity < 25
+          ? "Oh, okay. I’ll go with that for now. Could you connect it to one everyday example?"
+          : "That gives me a picture of it. Could you connect it to one everyday example?");
         return;
       }
       const response = this.cb.lesson.familiarity < 25

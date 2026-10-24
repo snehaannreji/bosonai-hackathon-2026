@@ -56,8 +56,11 @@ describe("arbitrary-topic lesson state", () => {
     expect(novicePrompt).toContain("instructor-only ground-truth check");
     expect(novicePrompt).toContain("Do not become angry");
     expect(novicePrompt).not.toContain("sound increasingly angry and impatient");
-    const config = buildSessionConfig("model-fixture", lesson).session as { tools: { parameters: { properties: { concept: { enum: string[] } } } }[] };
+    const config = buildSessionConfig("model-fixture", lesson).session as { audio: { input: { turn_detection: Record<string, unknown> } }; tools: { parameters: { properties: { concept: { enum: string[] } } } }[] };
     expect(config.tools[0].parameters.properties.concept.enum).toEqual(["topic_fact"]);
+    expect(config.audio.input.turn_detection).toEqual({ type: "server_vad", create_response: true, interrupt_response: true });
+    expect(studentPrompt(lesson)).toContain("wait comfortably and silently");
+    expect(studentPrompt(lesson)).toContain("Ask at most one question per reply");
     expect(Object.keys(initialTopicKnowledge(lesson))).toEqual(["concept_1", "concept_2", "concept_3"]);
   });
   it("sets the starting knowledge map from the chosen familiarity without treating it as evidence", () => {

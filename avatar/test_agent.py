@@ -95,12 +95,10 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         handlers[0](signal.SIGINT, None)
         await asyncio.sleep(0)
         self.assertTrue(stop.is_set())
-    async def test_microphone_audio_is_not_forwarded_while_avatar_speaks(self):
+    async def test_microphone_audio_is_forwarded_while_avatar_speaks_for_native_barge_in(self):
         ws = SimpleNamespace(send=AsyncMock())
         frame = SimpleNamespace(data=b"\x01\x02")
-        await agent.send_microphone_frame(ws, frame, avatar_speaking=True)
-        ws.send.assert_not_awaited()
-        await agent.send_microphone_frame(ws, frame, avatar_speaking=False)
+        await agent.send_microphone_frame(ws, frame)
         ws.send.assert_awaited_once_with(json.dumps({
             "type": "input_audio_buffer.append",
             "audio": base64.b64encode(frame.data).decode(),

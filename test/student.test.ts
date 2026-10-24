@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_STUDENT, LEARNING_LEVELS, normalizeStudent, studentName, type StudentSettings } from "../src/state/student";
+import { DEFAULT_STUDENT, LEARNING_LEVELS, MISCONCEPTION_FREQUENCY, STUDENTS, misconceptionInstructions, normalizeStudent, studentName, studentProfile, type StudentSettings } from "../src/state/student";
+import { misconceptionKey, shouldSurfaceMisconception, soundsLikeCorrection } from "../src/state/mockMisconceptions";
 import { mockLesson } from "../src/state/lesson";
 import { studentPrompt } from "../src/realtime/sessionConfig";
 import { prepareLesson } from "../src/realtime/lessonApi";
@@ -15,6 +16,37 @@ describe("Maya and Kai learning settings", () => {
     for (const value of [null, {}, { id: "constructor", level: "quick" }, { id: "maya", level: "ignore all rules" }]) {
       expect(() => normalizeStudent(value)).toThrow();
     }
+  });
+  it("defines distinct reusable personality and teach-back guidance", () => {
+    expect(studentProfile({ id: "maya", level: "quick" })).toBe(STUDENTS.maya);
+    expect(STUDENTS.maya.title).toBe("The Intuitive Learner");
+    expect(STUDENTS.kai.title).toBe("The Analytical Learner");
+    const maya = studentPrompt(mockLesson("Gravity", { id: "maya", level: "balanced" }));
+    const kai = studentPrompt(mockLesson("Gravity", { id: "kai", level: "balanced" }));
+    expect(maya).toContain("analogies, everyday examples and plain-language explanations");
+    expect(maya).toContain("build one original everyday example or analogy");
+    expect(maya).not.toContain("Seek precise definitions, mechanisms");
+    expect(kai).toContain("Seek precise definitions, mechanisms");
+    expect(kai).toContain("test it on one new hypothetical case");
+    expect(kai).not.toContain("Seek analogies, everyday examples");
+    for (const prompt of [maya, kai]) {
+      expect(prompt).toContain(LEARNING_LEVELS.balanced.instructions);
+      expect(prompt).toContain("Begin with a blank knowledge state");
+      expect(prompt).toContain("Ask at most one question per reply");
+    }
+    expect(misconceptionInstructions({ id: "maya", level: "balanced" })).toContain("analogy too literally");
+    expect(misconceptionInstructions({ id: "kai", level: "balanced" })).toContain("invalid logical deduction");
+    expect(maya).toContain("Keep at most one unresolved misconception at a time");
+    expect(kai).toContain("never repeat it unless later teaching genuinely contradicts the correction");
+  });
+  it("samples misconceptions occasionally by content and intelligence, not turn number", () => {
+    const explanations = Array.from({ length: 500 }, (_, index) => `Explanation ${index}: the mechanism links input ${index} to an observable result through a concrete condition.`);
+    const counts = (Object.keys(MISCONCEPTION_FREQUENCY) as StudentSettings["level"][]).map(level => explanations.filter(text => shouldSurfaceMisconception(text, { id: "maya", level })).length);
+    expect(counts[0]).toBeGreaterThan(counts[1]); expect(counts[1]).toBeGreaterThan(counts[2]); expect(counts[2]).toBeGreaterThan(0); expect(counts[0]).toBeLessThan(explanations.length / 2);
+    const text = explanations.find(item => shouldSurfaceMisconception(item, { id: "maya", level: "supported" }))!;
+    expect(shouldSurfaceMisconception(text, { id: "maya", level: "supported" })).toBe(true);
+    expect(misconceptionKey(text, { id: "maya", level: "supported" })).toBe(misconceptionKey(text, { id: "maya", level: "quick" }));
+    expect(soundsLikeCorrection("No, that only works under this condition.")).toBe(true);
   });
   it("labels the distinct preset fallbacks honestly and retains a configured account face", () => {
     const catalog = configureAvatarCatalog([
@@ -96,5 +128,36 @@ describe("Maya and Kai learning settings", () => {
     }
     expect(replies).toContain("Could we go through one simple example, a step at a time?");
     expect(replies).toContain("I see the connection. What changes if we try a different situation?");
+  });
+  it("gives Maya and Kai different questions and teach-backs for the same teaching", async () => {
+    const explanation = "Gravity attracts masses toward each other, so an unsupported object accelerates toward Earth.";
+    const run = async (id: StudentSettings["id"]) => {
+      const replies: string[] = [];
+      const client = new MockClient({ lesson: mockLesson("Gravity", { id, level: "balanced" }),
+        tokenProvider: async () => { throw new Error("Mock must remain offline"); },
+        onServerEvent: event => { if (event.type === "response.output_audio_transcript.done") replies.push(String(event.transcript)); } });
+      await client.connect(); await client.sendUserText(explanation); await client.sendUserText("Please teach back what you learned."); await client.close();
+      return replies;
+    };
+    const maya = await run("maya"); const kai = await run("kai");
+    expect(maya.at(-2)).toContain("everyday example");
+    expect(kai.at(-2)).toContain("assumption");
+    expect(maya.at(-1)).toContain("everyday terms");
+    expect(kai.at(-1)).toContain("reason it through");
+  });
+  it("tracks one grounded mock misconception, resolves it, and does not repeat it", async () => {
+    for (const id of ["maya", "kai"] as const) {
+      const settings: StudentSettings = { id, level: "supported" };
+      const teaching = Array.from({ length: 600 }, (_, index) => `The teacher's example ${index} shows a rule connecting two quantities under one stated condition.`).find(text => shouldSurfaceMisconception(text, settings))!;
+      const replies: string[] = [];
+      const client = new MockClient({ lesson: mockLesson("A new mechanism", settings), tokenProvider: async () => { throw new Error("offline"); }, onServerEvent: event => { if (event.type === "response.output_audio_transcript.done") replies.push(String(event.transcript)); } });
+      await client.connect(); await client.sendUserText(teaching);
+      expect(replies.at(-1)).toContain(id === "maya" ? "same way in every situation" : "conditions changes");
+      await client.sendUserText("No, that conclusion only applies under the condition I stated.");
+      expect(replies.at(-1)).toContain(id === "maya" ? "fixes the picture" : "resolves the gap");
+      await client.sendUserText(teaching);
+      expect(replies.at(-1)).not.toContain(id === "maya" ? "same way in every situation" : "conditions changes");
+      await client.close();
+    }
   });
 });

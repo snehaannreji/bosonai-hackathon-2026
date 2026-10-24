@@ -23,7 +23,7 @@ export async function prepareLesson(
   const notes = normalizeInstructorNotes(instructorNotes);
   const lessonStudent = student;
   const lessonName = modernCall ? undefined : normalizedName;
-  if (mock) {
+  if (mock && modernCall) {
     const lesson = mockLesson(normalized, modernCall ? student : familiarity, normalizedName);
     lesson.student = lessonStudent;
     if (lessonName) lesson.studentName = lessonName;
@@ -33,7 +33,7 @@ export async function prepareLesson(
   const response = await fetch("/api/lessons", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ topic: normalized, familiarity, studentName: lessonName, student: lessonStudent, instructorNotes: notes }),
+    body: JSON.stringify({ topic: normalized, familiarity, studentName: lessonName, student: lessonStudent, instructorNotes: notes, mock }),
     signal,
   });
   const data = await response.json();

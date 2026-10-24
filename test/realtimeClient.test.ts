@@ -81,4 +81,22 @@ describe("reused Boson client with Alex's learning tool", () => {
     await vi.waitFor(() => expect(ws.sent).toContainEqual({ type: "conversation.item.truncate", item_id: "alex-1", content_index: 0, audio_end_ms: 120 }));
     client.disconnect();
   });
+  it("stays silent after a completed response with no tool continuation", async () => {
+    const { client } = make(); const ws = await ready(client);
+    ws.receive({ type: "response.created", response: { id: "r1" } });
+    ws.receive({ type: "response.done", response: { id: "r1", status: "completed", output: [] } });
+    await Promise.resolve();
+    expect(ws.sent.filter(e => e.type === "response.create")).toHaveLength(0);
+    client.disconnect();
+  });
+  it("does not create a tool continuation after the response was cancelled", async () => {
+    const { client } = make(); const ws = await ready(client);
+    ws.receive({ type: "response.created", response: { id: "r1" } });
+    ws.receive({ type: "response.function_call_arguments.done", call_id: "cancelled-call", name: "update_understanding", arguments: "{}" });
+    ws.receive({ type: "input_audio_buffer.speech_started", item_id: "u2" });
+    ws.receive({ type: "response.done", response: { id: "r1", status: "cancelled", output: [] } });
+    await vi.waitFor(() => expect(ws.sent.some(e => (e.item as { type?: string } | undefined)?.type === "function_call_output")).toBe(true));
+    expect(ws.sent.filter(e => e.type === "response.create")).toHaveLength(0);
+    client.disconnect();
+  });
 });
